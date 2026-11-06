@@ -14,8 +14,8 @@ services:
               count: 1
               capabilities: [gpu]
     volumes:
-      - ./data/weights:/app/data/weights:ro
-      - ./results:/app/results
+      - ./data/weights:/ml/data/weights:ro
+      - ./results:/ml/results
 
   # Сайт без GPU: docker compose --profile cpu up --build web-cpu   (http://localhost:8000)
   web-cpu:
@@ -29,8 +29,8 @@ services:
     environment:
       - PHOTONIKA_DEVICE=cpu
     volumes:
-      - ./data/weights:/app/data/weights:ro
-      - ./results:/app/results
+      - ./data/weights:/ml/data/weights:ro
+      - ./results:/ml/results
     profiles: ["cpu"]
 
   # Streamlit-демо (запасной интерфейс): docker compose --profile streamlit up --build streamlit
@@ -42,9 +42,9 @@ services:
         TORCH_INDEX: https://download.pytorch.org/whl/cpu
     ports:
       - "8501:8501"
-    command: ["streamlit", "run", "app/ui.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    command: ["streamlit", "run", "ml/streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
     volumes:
-      - ./data/weights:/app/data/weights:ro
+      - ./data/weights:/ml/data/weights:ro
     profiles: ["streamlit"]
 
   # Формат сдачи в контейнере:
@@ -56,8 +56,8 @@ services:
       dockerfile: docker/Dockerfile
       args:
         TORCH_INDEX: https://download.pytorch.org/whl/cpu
-    entrypoint: ["python", "-m", "app.cli", "synth"]
+    entrypoint: ["python", "-m", "ml.cli", "synth"]
     volumes:
-      - ./data/weights:/app/data/weights:ro
-      - ./results:/app/results
+      - ./data/weights:/ml/data/weights:ro
+      - ./results:/ml/results
     profiles: ["cpu"]

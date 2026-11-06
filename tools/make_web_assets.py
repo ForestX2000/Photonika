@@ -2,8 +2,8 @@
 
     python tools/make_web_assets.py
 
-photos_classic → GS-200 + Adam-400 → web/assets/doe_phase.png (фаза в палитре twilight),
-web/assets/plane_{1..4}.png (модуль поля на 4 расстояниях в «лазерной» палитре).
+photos_classic → GS-200 + Adam-400 → frontend/assets/doe_phase.png (фаза в палитре twilight),
+frontend/assets/plane_{1..4}.png (модуль поля на 4 расстояниях в «лазерной» палитре).
 """
 import sys
 from pathlib import Path
@@ -14,13 +14,13 @@ sys.path.insert(0, str(ROOT))
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from app.data import classic_testsets  # noqa: E402
-from app.pipeline import run  # noqa: E402
-from server.service import laser_colors, phase_colors  # noqa: E402
+from ml.data import classic_testsets  # noqa: E402
+from ml.pipeline import run  # noqa: E402
+from backend.service import laser_colors, phase_colors  # noqa: E402
 
 
 def main() -> None:
-    out = ROOT / "web" / "assets"
+    out = ROOT / "frontend" / "assets"
     out.mkdir(parents=True, exist_ok=True)
     res = run(classic_testsets()["photos_classic"], "gs+adam", device="cpu")
     Image.fromarray(phase_colors(res.doe_u8)).save(out / "doe_phase.png", optimize=True)

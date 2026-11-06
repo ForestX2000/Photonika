@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Oswald:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
   <!-- ===================== Навигация ===================== -->
@@ -19,10 +19,10 @@
       <span>Photonika</span>
     </a>
     <nav class="nav-links" id="navLinks" aria-label="Разделы">
+      <a href="#gallery">Наборы</a>
       <a href="#studio">Синтез</a>
       <a href="#how">Как это работает</a>
       <a href="#numbers">Результаты</a>
-      <a href="/docs" target="_blank" rel="noopener">API</a>
     </nav>
     <div class="nav-right">
       <span class="chip chip-device" id="deviceChip" title="Устройство расчёта на сервере">
@@ -65,6 +65,19 @@
         <figure class="plate" data-plane="2"><img src="assets/plane_2.png" alt="Плоскость 2" width="128" height="128"><figcaption>25,3 мм</figcaption></figure>
         <figure class="plate" data-plane="3"><img src="assets/plane_3.png" alt="Плоскость 3" width="128" height="128"><figcaption>26,5 мм</figcaption></figure>
         <figure class="plate" data-plane="4"><img src="assets/plane_4.png" alt="Плоскость 4" width="128" height="128"><figcaption>27,7 мм</figcaption></figure>
+
+        <div class="focus-card glass" aria-live="polite">
+          <span class="focus-dot" aria-hidden="true"></span>
+          <div>
+            <small>сейчас в фокусе</small>
+            <b id="focusTitle">Плоскость 01</b>
+            <span id="focusMeta">z = 24,1 мм · PCC 0,59</span>
+          </div>
+          <div class="focus-bar" aria-hidden="true"><span id="focusBar"></span></div>
+        </div>
+        <div class="hero-badge glass" aria-hidden="true">
+          <b>1</b><span>ДОЭ</span><i></i><b>4</b><span>изображения</span>
+        </div>
       </div>
 
       <ol class="plane-index" id="planeIndex" aria-label="Плоскости восстановления">
@@ -89,6 +102,28 @@
         <a href="#numbers">Подробнее <span aria-hidden="true">→</span></a>
       </div>
       <div class="fact-progress" aria-hidden="true"><span id="factProgress"></span></div>
+    </div>
+  </section>
+
+  <!-- ===================== Бегущая лента ===================== -->
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track" id="marqueeTrack">
+      <span>Фазовый ДОЭ 128×128</span><i>✦</i><span>Френель с одним FFT</span><i>✦</i>
+      <span>λ = 532 нм</span><i>✦</i><span>4 плоскости · 24,1–27,7 мм</span><i>✦</i>
+      <span>U-Net без разметки</span><i>✦</i><span>PCC · SSIM</span><i>✦</i>
+      <span>Gerchberg–Saxton</span><i>✦</i><span>8-битный PNG</span><i>✦</i>
+    </div>
+  </div>
+
+  <!-- ===================== Готовые наборы ===================== -->
+  <section class="section gallery-section" id="gallery">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow center">выберите набор — и сразу в студию</p>
+        <h2 class="section-title">Готовые наборы</h2>
+      </div>
+      <div class="gallery" id="galleryCards"></div>
+      <div class="gallery-nav" aria-hidden="true"><span></span><span></span></div>
     </div>
   </section>
 
@@ -248,6 +283,14 @@
         <h2 class="section-title">Как это работает</h2>
       </div>
 
+      <ol class="pipeline">
+        <li><span class="pipe-num">01</span><b>4 PNG</b><small>128×128, 8 бит</small></li>
+        <li><span class="pipe-num">02</span><b>Нейросеть</b><small>фаза за один проход</small></li>
+        <li><span class="pipe-num">03</span><b>doe.png</b><small>0 = −π, 255 = +π</small></li>
+        <li><span class="pipe-num">04</span><b>Френель × 4</b><small>24,1 · 25,3 · 26,5 · 27,7 мм</small></li>
+        <li><span class="pipe-num">05</span><b>PCC · SSIM</b><small>по 8-битным PNG</small></li>
+      </ol>
+
       <div class="how-grid">
         <article class="how-card is-accent">
           <svg class="how-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M6 24h8m20 0h8M14 12v24M34 12v24M14 18c6 0 6 12 20 12M14 30c6 0 6-12 20-12"/></svg>
@@ -306,14 +349,38 @@
   </section>
 
   <footer class="footer">
-    <div class="container footer-inner">
-      <a class="brand" href="#top"><span class="brand-dot" aria-hidden="true"></span><span>Photonika</span></a>
-      <p class="muted small">Хакатон НИЯУ МИФИ · «Разработка нейросетевого метода синтеза дифракционных оптических элементов»</p>
-      <a class="muted small" href="/docs" target="_blank" rel="noopener">Документация API</a>
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="#top"><span class="brand-dot" aria-hidden="true"></span><span>Photonika</span></a>
+          <p class="muted">Нейросетевой синтез фазовых дифракционных оптических элементов: один ДОЭ — четыре
+            изображения на четырёх расстояниях.</p>
+        </div>
+        <div>
+          <h4>Разделы</h4>
+          <a href="#gallery">Готовые наборы</a>
+          <a href="#studio">Студия синтеза</a>
+          <a href="#how">Как это работает</a>
+          <a href="#numbers">Результаты</a>
+        </div>
+        <div>
+          <h4>Кейс</h4>
+          <p class="muted">Хакатон НИЯУ МИФИ · лаборатория «Фотоника и информационная оптика», каф. № 37
+            «Лазерная физика».</p>
+        </div>
+        <div>
+          <h4>Параметры</h4>
+          <p class="muted">ДОЭ 128×128 · λ = 532 нм<br>пиксель ПВМС 10 мкм<br>z = 24,1 / 25,3 / 26,5 / 27,7 мм</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span class="muted small">© 2026 Photonika</span>
+        <a class="muted small" href="#top">Наверх ↑</a>
+      </div>
     </div>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>

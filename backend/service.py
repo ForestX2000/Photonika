@@ -1,6 +1,6 @@
 """Сервисный слой: синтез ДОЭ, кэш результатов, рендер PNG для фронтенда.
 
-Вся физика и метрики — из app/ (тот же конвейер, что у CLI: doe.png → перечитывание →
+Вся физика и метрики — из ml/ (тот же конвейер, что у CLI: doe.png → перечитывание →
 Френель → recon → метрики по протоколу организаторов). Здесь только упаковка для HTTP.
 """
 from __future__ import annotations
@@ -19,11 +19,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from app.config import DEFAULT_OPTICS, PHYSICS_VERSION
-from app.data import fit_square
-from app.fresnel import fresnel_modulus_np, uint8_to_phase
-from app.metrics import DEFAULT_NORM
-from app.pipeline import METHOD_HELP, METHODS, Result, reconstruct, run
+from ml.config import DEFAULT_OPTICS, PHYSICS_VERSION
+from ml.data import fit_square
+from ml.fresnel import fresnel_modulus_np, uint8_to_phase
+from ml.metrics import DEFAULT_NORM
+from ml.pipeline import METHOD_HELP, METHODS, Result, reconstruct, run
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTSETS = ROOT / "data" / "testsets"
@@ -122,7 +122,7 @@ class SynthesisService:
     def __init__(self, weights: Path = DEFAULT_WEIGHTS, device: str = "auto", cache_size: int = 32):
         import torch
 
-        from app.fresnel import FresnelSingleFFT
+        from ml.fresnel import FresnelSingleFFT
 
         self.device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
         self.prop = FresnelSingleFFT(OPTICS).to(self.device)
@@ -138,7 +138,7 @@ class SynthesisService:
         if not self.weights.is_file():
             self.model, self.model_info = None, None
             return
-        from app.model import load_model
+        from ml.model import load_model
 
         try:
             model, ckpt = load_model(self.weights, self.device)

@@ -3,15 +3,15 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 
 @pytest.mark.skipif(not (ROOT / "data" / "testsets" / "mephi_letters").is_dir(),
-                    reason="run `python -m app.cli make-testsets` first")
+                    reason="run `python -m ml.cli make-testsets` first")
 def test_ui_synthesis_flow():
-    at = AppTest.from_file(str(ROOT / "app" / "ui.py"), default_timeout=180)
+    at = AppTest.from_file(str(ROOT / "ml" / "streamlit_app.py"), default_timeout=180)
     at.run()
     assert not at.exception
     method =next(s for s in at.sidebar.selectbox if s.label == "Метод синтеза")

@@ -4,7 +4,7 @@
     letters  — символы и короткие строки из TTF-шрифтов (кириллица, латиница, цифры);
     shapes   — геометрические фигуры разной яркости;
     photos   — фото в оттенках серого: встроенные изображения scikit-image и (необязательно)
-               папка data/photos (например, DIV2K: python -m app.data fetch-div2k);
+               папка data/photos (например, DIV2K: python -m ml.data fetch-div2k);
     textures — 1/f-шум (статистика, похожая на естественные изображения).
 
 Четвёрки для обучения собираются случайно на лету (иногда из одной категории, иногда
@@ -13,9 +13,9 @@
 astronaut, coins, moon, text, page, horse) из обучающего пула исключены.
 
 CLI:
-    python -m app.data build-pool --count 20000      # собрать и закэшировать пул
-    python -m app.data make-testsets                 # PNG-наборы в data/testsets/
-    python -m app.data fetch-div2k                   # скачать фото DIV2K (≈450 МБ)
+    python -m ml.data build-pool --count 20000      # собрать и закэшировать пул
+    python -m ml.data make-testsets                 # PNG-наборы в data/testsets/
+    python -m ml.data fetch-div2k                   # скачать фото DIV2K (≈450 МБ)
 """
 from __future__ import annotations
 

@@ -37,7 +37,7 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $WeightsPath) -Force | Ou
 
 # Проверяем командную строку, а не только PID: Windows переиспользует PID.
 $ExistingRuns = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)-m\s+app\.training\b' -and $_.CommandLine.Contains($RunDirectory) })
+    Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)-m\s+ml\.training\b' -and $_.CommandLine.Contains($RunDirectory) })
 if ($ExistingRuns.Count -gt 0) {
     throw "Training is already running for this run directory (PID $($ExistingRuns[0].ProcessId)). Use scripts/training-status.ps1."
 }
@@ -56,7 +56,7 @@ foreach ($LogName in @('training.log', 'training.stderr.log')) {
 
 $Inv = [System.Globalization.CultureInfo]::InvariantCulture
 $TrainingArguments = @(
-    '-u', '-m', 'app.training',
+    '-u', '-m', 'ml.training',
     '--device', $Device,
     '--minutes', $Minutes.ToString($Inv),
     '--base', $Base.ToString($Inv), '--input-mode', $InputMode, '--batch', $Batch,

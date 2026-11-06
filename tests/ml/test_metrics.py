@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import torch
 
-from app.losses import multiplane_loss, pcc_t, ssim_global_t, ssim_t
-from app.metrics import modulus_to_uint8, pair_metrics, pcc, ssim, ssim_global
+from ml.losses import multiplane_loss, pcc_t, ssim_global_t, ssim_t
+from ml.metrics import modulus_to_uint8, pair_metrics, pcc, ssim, ssim_global
 
 
 def _pair(seed=0):

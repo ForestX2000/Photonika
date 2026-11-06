@@ -1,10 +1,10 @@
 """Командная строка.
 
-    python -m app.cli synth --inputs 1.png 2.png 3.png 4.png --out results/ [--method net+adam]
-    python -m app.cli verify --doe results/doe.png --inputs 1.png 2.png 3.png 4.png
-    python -m app.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters
-    python -m app.cli info
-    python -m app.cli make-testsets
+    python -m ml.cli synth --inputs 1.png 2.png 3.png 4.png --out results/ [--method net+adam]
+    python -m ml.cli verify --doe results/doe.png --inputs 1.png 2.png 3.png 4.png
+    python -m ml.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters
+    python -m ml.cli info
+    python -m ml.cli make-testsets
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def pick_device(name: str) -> str:
 def _load_model(weights: Path | None, device: str, required: bool):
     if weights is None or not Path(weights).is_file():
         if required:
-            raise SystemExit(f"Нет весов сети: {weights}. Обучите (python -m app.training) "
+            raise SystemExit(f"Нет весов сети: {weights}. Обучите (python -m ml.training) "
                              f"или выберите --method gs+adam.")
         return None
     from .model import load_model
@@ -191,7 +191,7 @@ def cmd_info(_args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     from .pipeline import METHOD_HELP, METHODS
 
-    ap = argparse.ArgumentParser(prog="python -m app.cli", description="Синтез фазового ДОЭ под 4 изображения")
+    ap = argparse.ArgumentParser(prog="python -m ml.cli", description="Синтез фазового ДОЭ под 4 изображения")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("synth", help="4 PNG → doe.png + recon_1..4.png + metrics.json/csv")
@@ -233,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser("make-testsets", help="записать тестовые наборы PNG в data/testsets")
     t.add_argument("--out", type=Path, default=None)
-    t.set_defaults(func=lambda a: [print(p) for p in __import__("app.data", fromlist=["x"]).make_testsets(a.out)])
+    t.set_defaults(func=lambda a: [print(p) for p in __import__("ml.data", fromlist=["x"]).make_testsets(a.out)])
     return ap
 
 

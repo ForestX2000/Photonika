@@ -1,7 +1,7 @@
-"""HTTP API Photonika (FastAPI) + раздача фронтенда из web/.
+"""HTTP API Photonika (FastAPI) + раздача фронтенда из frontend/.
 
-    python -m server                         # http://127.0.0.1:8000
-    python -m server --host 0.0.0.0 --port 8000 --device cuda
+    python -m backend                         # http://127.0.0.1:8000
+    python -m backend --host 0.0.0.0 --port 8000 --device cuda
 
 API (все ответы JSON, кроме PNG/ZIP):
     GET  /api/health
@@ -13,6 +13,10 @@ API (все ответы JSON, кроме PNG/ZIP):
     POST /api/results/{id}/compare?gs_iters=50   то же для GS-N (сравнение по времени и качеству)
     GET  /api/results/{id}/slice.png?z_mm=26.5   модуль поля на произвольном z (для 3D-просмотра)
     GET  /api/results/{id}/download.zip          doe.png, recon_1..4.png, source_1..4.png, metrics.json/csv
+
+Документация API (Swagger) — отдельная ссылка, с сайта на неё ссылок нет:
+    /api/docs (Swagger UI), /api/redoc, /api/openapi.json.
+    PHOTONIKA_DOCS=0 — выключить документацию совсем (например, на публичном стенде).
 """
 from __future__ import annotations
 
@@ -27,15 +31,18 @@ from fastapi.staticfiles import StaticFiles
 from .service import DEFAULT_WEIGHTS, SynthesisService, UserError, decode_image
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB = ROOT / "web"
+FRONTEND = ROOT / "frontend"
 
 
 def create_app(weights: Path | None = None, device: str | None = None) -> FastAPI:
     weights = Path(weights or os.environ.get("PHOTONIKA_WEIGHTS", DEFAULT_WEIGHTS))
     device = device or os.environ.get("PHOTONIKA_DEVICE", "auto")
     service = SynthesisService(weights, device)
+    docs = os.environ.get("PHOTONIKA_DOCS", "1") != "0"
     app = FastAPI(title="Photonika API", version="1.0",
-                  description="Синтез фазового ДОЭ под 4 изображения на 4 расстояниях")
+                  description="Синтез фазового ДОЭ под 4 изображения на 4 расстояниях",
+                  docs_url="/api/docs" if docs else None, redoc_url="/api/redoc" if docs else None,
+                  openapi_url="/api/openapi.json" if docs else None)
     app.state.service = service
 
     # Фронтенд может работать на отдельном dev-сервере (например, Vite на :5173)
@@ -106,12 +113,12 @@ def create_app(weights: Path | None = None, device: str | None = None) -> FastAP
         return Response(service.zip_bytes(rid), media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="photonika_{rid}.zip"'})
 
-    if WEB.is_dir():
-        app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
+    if FRONTEND.is_dir():
+        app.mount("/", StaticFiles(directory=FRONTEND, html=True), name="frontend")
     else:
         @app.get("/")
         def root():
-            return {"message": "Photonika API. Фронтенд не найден (папка web/). Документация API: /docs"}
+            return {"message": "Photonika API. Фронтенд не найден (папка frontend/). Документация API: /api/docs"}
 
     return app
 
