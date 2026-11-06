@@ -200,24 +200,40 @@ python -m app.cli bench --sets data/testsets/photos_classic data/testsets/mephi_
 Время — медиана 3 запусков после прогрева, с синхронизацией CUDA. Результат: `results/bench/bench.md`,
 `bench.json`, `quality_vs_time.png`.
 
-## Демо
+## Сайт (фронтенд + API)
 
 ```powershell
-streamlit run app/ui.py
+python -m server                       # http://127.0.0.1:8000  (документация API: /docs)
+python -m server --host 0.0.0.0 --device cuda --port 8000
 ```
 
-Загрузка 4 PNG или тестового набора, выбор метода, ДОЭ, 4 восстановления, таблица метрик,
-сравнение по времени с GS-50, ползунок z от 23 до 29 мм (изображения фокусируются по очереди),
-скачивание `doe.png`/`recon_*.png`/`metrics.json` архивом.
+Сервер (`server/`, FastAPI) раздаёт фронтенд из `web/` и HTTP API поверх того же конвейера, что и CLI
+(ДОЭ сохраняется в 8 бит, восстановление считается из него, метрики — по протоколу организаторов):
+
+| запрос | что делает |
+|---|---|
+| `GET /api/info` | физика, устройство, методы, есть ли веса сети |
+| `GET /api/testsets`, `GET /api/testsets/{name}/{i}.png` | тестовые наборы |
+| `POST /api/synthesize` | multipart: `method`, `gs_iters`, `adam_steps`, `refine_steps`, `testset` **или** `image_1..image_4` → ДОЭ, 4 восстановления, метрики, время |
+| `POST /api/results/{id}/compare?gs_iters=50` | тот же набор методом GS-N — сравнение по времени и качеству |
+| `GET /api/results/{id}/slice.png?z_mm=26.5` | модуль поля на любом z (3D-просмотр) |
+| `GET /api/results/{id}/download.zip` | `doe.png`, `recon_1..4.png`, `source_1..4.png`, `metrics.json/csv` |
+
+Переменные окружения: `PHOTONIKA_DEVICE` (`auto`/`cpu`/`cuda`), `PHOTONIKA_WEIGHTS` (путь к весам),
+`PHOTONIKA_CORS` (через запятую — origin'ы, если фронтенд запущен отдельно). Вычисления идут по
+одному (блокировка), результаты хранятся в памяти (последние 32).
+
+Запасной интерфейс — Streamlit: `streamlit run app/ui.py`.
 
 ## Docker
 
 ```powershell
-docker compose up --build                                   # демо с GPU, http://localhost:8501
-docker compose --profile cpu up --build doe-demo-cpu        # без GPU, http://localhost:8502
+docker compose up --build web                               # сайт с GPU, http://localhost:8000
+docker compose --profile cpu up --build web-cpu             # сайт без GPU, http://localhost:8000
+docker compose --profile streamlit up --build streamlit     # Streamlit-демо, http://localhost:8501
 ```
 
-Веса монтируются из `data/weights`, результаты — в `results/`.
+Веса монтируются из `data/weights` (только чтение) и в образ не попадают; результаты — в `results/`.
 
 ## Результаты итерационных методов (эталон для сети)
 
@@ -300,7 +316,9 @@ app/
   training.py      обучение (AMP, автобатч, resume, чекпоинты, metrics.jsonl)
   cli.py           synth / verify / bench / info / make-testsets
   compare_runs.py  сравнение прогонов
-  ui.py            Streamlit-демо
+  ui.py            Streamlit-демо (запасной интерфейс)
+server/            веб-сервер: FastAPI API + раздача фронтенда
+web/               фронтенд сайта
 scripts/           фоновое обучение на Windows, A/B
 tools/verify_submission.py   независимая проверка по PNG
 tests/             pytest
