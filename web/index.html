@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photonika — синтез ДОЭ</title>
+  <meta name="description" content="Нейросетевой синтез фазового дифракционного оптического элемента: 4 изображения на 4 расстояниях из одного ДОЭ.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Oswald:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ===================== Навигация ===================== -->
+  <header class="nav" id="top">
+    <a class="brand" href="#top" aria-label="Photonika — на главную">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <span>Photonika</span>
+    </a>
+    <nav class="nav-links" id="navLinks" aria-label="Разделы">
+      <a href="#studio">Синтез</a>
+      <a href="#how">Как это работает</a>
+      <a href="#numbers">Результаты</a>
+      <a href="/docs" target="_blank" rel="noopener">API</a>
+    </nav>
+    <div class="nav-right">
+      <span class="chip chip-device" id="deviceChip" title="Устройство расчёта на сервере">
+        <span class="pulse" aria-hidden="true"></span><span id="deviceText">подключение…</span>
+      </span>
+      <a class="btn btn-gold btn-sm" href="#studio">Запустить синтез</a>
+      <button class="nav-burger" id="navBurger" aria-label="Меню" aria-expanded="false" aria-controls="navLinks">
+        <span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================== Первый экран ===================== -->
+  <section class="hero">
+    <canvas class="hero-canvas" id="heroCanvas" aria-hidden="true"></canvas>
+    <div class="hero-glow" aria-hidden="true"></div>
+
+    <div class="hero-inner container">
+      <div class="hero-copy">
+        <p class="eyebrow">НИЯУ МИФИ · лаборатория «Фотоника и информационная оптика»</p>
+        <h1 class="hero-title">Свет<br>в&nbsp;четырёх<br><span class="laser-text">плоскостях</span></h1>
+        <p class="hero-lead">Один фазовый ДОЭ 128×128 — и на расстояниях 24,1, 25,3, 26,5 и 27,7&nbsp;мм
+          по очереди фокусируются четыре разных изображения. Нейросеть рассчитывает такой элемент за один проход.</p>
+        <div class="hero-actions">
+          <a class="btn btn-gold" href="#studio">Запустить синтез
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+          <a class="btn btn-ghost" href="#how">
+            <span class="play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>
+            Как это работает</a>
+        </div>
+      </div>
+
+      <div class="scene" id="scene" aria-label="Схема: ДОЭ и четыре плоскости восстановления">
+        <div class="beam" aria-hidden="true"></div>
+        <figure class="plate plate-doe">
+          <img src="assets/doe_phase.png" alt="Фаза синтезированного ДОЭ" width="128" height="128">
+          <figcaption>ДОЭ · фаза</figcaption>
+        </figure>
+        <figure class="plate" data-plane="1"><img src="assets/plane_1.png" alt="Плоскость 1" width="128" height="128"><figcaption>24,1 мм</figcaption></figure>
+        <figure class="plate" data-plane="2"><img src="assets/plane_2.png" alt="Плоскость 2" width="128" height="128"><figcaption>25,3 мм</figcaption></figure>
+        <figure class="plate" data-plane="3"><img src="assets/plane_3.png" alt="Плоскость 3" width="128" height="128"><figcaption>26,5 мм</figcaption></figure>
+        <figure class="plate" data-plane="4"><img src="assets/plane_4.png" alt="Плоскость 4" width="128" height="128"><figcaption>27,7 мм</figcaption></figure>
+      </div>
+
+      <ol class="plane-index" id="planeIndex" aria-label="Плоскости восстановления">
+        <li data-plane="1"><button type="button">01</button></li>
+        <li data-plane="2"><button type="button">02</button></li>
+        <li data-plane="3"><button type="button">03</button></li>
+        <li data-plane="4"><button type="button">04</button></li>
+      </ol>
+    </div>
+
+    <div class="hero-facts container">
+      <div class="fact">
+        <p>Фазовый ДОЭ <b>128×128</b>, фаза от −π до π, сохраняется как 8-битный PNG.</p>
+        <a href="#how">Подробнее <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="fact">
+        <p>Дифракция Френеля с <b>одним FFT</b>, λ = 532 нм, пиксель ПВМС 10 мкм.</p>
+        <a href="#how">Подробнее <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="fact">
+        <p>Качество — <b>PCC и SSIM</b> по амплитудам, каждое изображение нормировано на 1.</p>
+        <a href="#numbers">Подробнее <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="fact-progress" aria-hidden="true"><span id="factProgress"></span></div>
+    </div>
+  </section>
+
+  <!-- ===================== Студия синтеза ===================== -->
+  <section class="section" id="studio">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow center">загрузите 4 изображения — получите один ДОЭ</p>
+        <h2 class="section-title">Студия синтеза</h2>
+      </div>
+
+      <div class="studio card">
+        <div class="studio-inputs">
+          <div class="step-head">
+            <span class="step-num">1</span>
+            <div>
+              <h3>Изображения</h3>
+              <p class="muted">i-е изображение фокусируется на i-м расстоянии. Перетащите файлы или нажмите на ячейку.
+                Цветные приводятся к яркости, другой размер — к 128×128.</p>
+            </div>
+          </div>
+          <div class="slots" id="slots"></div>
+          <input type="file" id="fileInput" accept="image/*" hidden>
+          <input type="file" id="multiInput" accept="image/*" multiple hidden>
+          <div class="slots-actions">
+            <button class="btn btn-ghost btn-sm" type="button" id="pickAll">Загрузить 4 файла сразу</button>
+            <button class="btn btn-link btn-sm" type="button" id="clearSlots">Очистить</button>
+          </div>
+
+          <div class="testsets-head">
+            <h4>или тестовый набор</h4>
+            <span class="muted small">в обучение не входили</span>
+          </div>
+          <div class="testsets" id="testsets" role="list"></div>
+        </div>
+
+        <div class="studio-settings">
+          <div class="step-head">
+            <span class="step-num">2</span>
+            <div>
+              <h3>Метод</h3>
+              <p class="muted">Нейросеть даёт ДОЭ за один проход; итерационные методы — эталон для сравнения.</p>
+            </div>
+          </div>
+          <div class="methods" id="methods" role="radiogroup" aria-label="Метод синтеза"></div>
+
+          <details class="advanced" id="advanced">
+            <summary>Параметры метода</summary>
+            <div class="range-row" data-param="gs_iters">
+              <label for="gsIters">Итераций GS <output id="gsItersOut">200</output></label>
+              <input type="range" id="gsIters" min="10" max="500" step="10" value="200">
+            </div>
+            <div class="range-row" data-param="adam_steps">
+              <label for="adamSteps">Шагов Adam <output id="adamStepsOut">400</output></label>
+              <input type="range" id="adamSteps" min="50" max="1000" step="50" value="400">
+            </div>
+            <div class="range-row" data-param="refine_steps">
+              <label for="refineSteps">Шагов доуточнения после сети <output id="refineStepsOut">25</output></label>
+              <input type="range" id="refineSteps" min="0" max="200" step="5" value="25">
+            </div>
+          </details>
+
+          <button class="btn btn-gold btn-lg btn-block" type="button" id="runBtn" disabled>
+            <span class="btn-label">Синтезировать ДОЭ</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+          <p class="run-hint muted small" id="runHint">Добавьте 4 изображения или выберите тестовый набор.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Результат ===================== -->
+  <section class="section results" id="results" hidden>
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow center" id="resultEyebrow">результат синтеза</p>
+        <h2 class="section-title">Четыре изображения — один ДОЭ</h2>
+      </div>
+
+      <div class="stats card" id="stats"></div>
+
+      <div class="result-grid">
+        <article class="card doe-card">
+          <div class="doe-head">
+            <h3>ДОЭ</h3>
+            <div class="seg seg-sm" role="tablist" aria-label="Вид ДОЭ">
+              <button type="button" role="tab" aria-selected="true" data-doe="color">цвет</button>
+              <button type="button" role="tab" aria-selected="false" data-doe="raw">doe.png</button>
+            </div>
+          </div>
+          <div class="doe-img"><img id="doeImg" alt="Синтезированный ДОЭ" width="128" height="128"></div>
+          <p class="muted small" id="doeCaption">Фаза от −π до π. В doe.png: 0 = −π, 255 = +π.</p>
+          <div class="doe-actions">
+            <a class="btn btn-gold btn-block" id="downloadBtn" href="#" download>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
+              Скачать результат (.zip)</a>
+            <button class="btn btn-ghost btn-block" type="button" id="compareBtn">Сравнить с GS-50</button>
+          </div>
+          <div class="compare" id="compare" hidden></div>
+        </article>
+
+        <div class="planes-wrap">
+          <div class="planes-head">
+            <div class="seg" role="tablist" aria-label="Что показывать">
+              <button type="button" role="tab" aria-selected="true" data-view="recon">Восстановление</button>
+              <button type="button" role="tab" aria-selected="false" data-view="laser">Лазер</button>
+              <button type="button" role="tab" aria-selected="false" data-view="source">Исходное</button>
+            </div>
+            <span class="muted small">наведите на карточку, чтобы увидеть исходное</span>
+          </div>
+          <div class="planes" id="planes"></div>
+        </div>
+      </div>
+
+      <!-- 3D-просмотр -->
+      <div class="viewer card" id="viewer">
+        <div class="viewer-copy">
+          <p class="eyebrow">3D-просмотр</p>
+          <h3 class="viewer-title">Пройдите<br>вдоль луча</h3>
+          <p class="muted">Двигайте плоскость наблюдения: изображения по очереди фокусируются на своих расстояниях.
+            Это и есть «трёхмерная сцена» из одного плоского элемента.</p>
+          <button class="btn btn-ghost" type="button" id="playBtn">
+            <span class="play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>
+            <span id="playLabel">Пролететь</span></button>
+        </div>
+        <div class="viewer-stage">
+          <div class="viewer-img">
+            <img id="sliceImg" alt="Модуль поля на выбранном расстоянии" width="128" height="128">
+            <span class="z-badge" id="zBadge">24,1 мм</span>
+            <span class="focus-badge" id="focusBadge">в фокусе: 1</span>
+          </div>
+          <div class="z-track">
+            <input type="range" id="zRange" min="23" max="29" step="0.05" value="24.1" aria-label="Расстояние z, мм">
+            <div class="z-marks" id="zMarks"></div>
+          </div>
+          <p class="muted small" id="zNote"></p>
+        </div>
+      </div>
+
+      <div class="card table-card">
+        <h3>Метрики по плоскостям</h3>
+        <p class="muted small">Протокол организаторов: сравниваются амплитуды, каждое изображение нормировано на 1.
+          SSIM — локальный (skimage, окно 7×7), SSIM со слайда — формула ИСС по всему изображению.</p>
+        <div class="table-scroll">
+          <table class="metrics" id="metricsTable"></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Как это работает ===================== -->
+  <section class="section" id="how">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow center">физика, нейросеть и честные метрики</p>
+        <h2 class="section-title">Как это работает</h2>
+      </div>
+
+      <div class="how-grid">
+        <article class="how-card is-accent">
+          <svg class="how-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M6 24h8m20 0h8M14 12v24M34 12v24M14 18c6 0 6 12 20 12M14 30c6 0 6-12 20-12"/></svg>
+          <h3>Френель с одним FFT</h3>
+          <p>Поле в плоскости восстановления — одно преобразование Фурье от ДОЭ, умноженного на квадратичную фазу
+            своего расстояния. Четыре расстояния — четыре FFT.</p>
+        </article>
+        <article class="how-card">
+          <svg class="how-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="10" cy="14" r="4"/><circle cx="10" cy="34" r="4"/><circle cx="24" cy="24" r="4"/><circle cx="38" cy="14" r="4"/><circle cx="38" cy="34" r="4"/><path d="M14 14l6 8m-6 12l6-8m8-2l6-6m-6 10l6 6"/></svg>
+          <h3>Нейросеть</h3>
+          <p>U-Net по четырём изображениям предсказывает фазу поля в каждой плоскости; одно обратное
+            распространение даёт ДОЭ. Обучение без разметки — через дифференцируемую физику.</p>
+        </article>
+        <article class="how-card">
+          <svg class="how-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 38V10m0 28h32"/><path d="M14 30l7-8 6 5 11-13"/><circle cx="38" cy="14" r="2.5"/></svg>
+          <h3>Метрики жюри</h3>
+          <p>PCC и SSIM по 8-битным PNG: ДОЭ сохраняется, перечитывается, восстанавливается. Амплитуды,
+            каждое изображение нормировано на максимум.</p>
+        </article>
+        <article class="how-card">
+          <svg class="how-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 8a16 16 0 1 0 16 16"/><path d="M40 8v10H30"/><path d="M24 16v8l6 4"/></svg>
+          <h3>Итерационный эталон</h3>
+          <p>Многоплоскостный Gerchberg–Saxton и Adam по фазе — сотни итераций. С ними сеть сравнивается
+            по качеству и по времени.</p>
+        </article>
+      </div>
+
+      <div class="formula card">
+        <div class="formula-math" aria-label="Формула Френеля с одним преобразованием Фурье">
+          <math display="block">
+            <mi>K</mi><mo>(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>)</mo><mo>=</mo>
+            <mfrac><msup><mi>e</mi><mrow><mi>j</mi><mi>k</mi><mi>z</mi></mrow></msup><mrow><mi>j</mi><mi>λ</mi><mi>z</mi></mrow></mfrac>
+            <msup><mi>e</mi><mrow><mfrac><mrow><mi>j</mi><mi>π</mi></mrow><mrow><mi>λ</mi><mi>z</mi></mrow></mfrac><mo>(</mo><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><msup><mi>y</mi><mn>2</mn></msup><mo>)</mo></mrow></msup>
+            <mo>·</mo><mi>FFT</mi><mo>[</mo><mi>H</mi><mo>(</mo><mi>u</mi><mo>,</mo><mi>v</mi><mo>)</mo>
+            <msup><mi>e</mi><mrow><mfrac><mrow><mi>j</mi><mi>π</mi></mrow><mrow><mi>λ</mi><mi>z</mi></mrow></mfrac><mo>(</mo><msup><mi>u</mi><mn>2</mn></msup><mo>+</mo><msup><mi>v</mi><mn>2</mn></msup><mo>)</mo></mrow></msup><mo>]</mo>
+          </math>
+        </div>
+        <div class="formula-notes">
+          <div><b id="critDist">24,06 мм</b><span>критическое расстояние N·Δx²/λ — все расстояния чуть больше, алиасинга нет</span></div>
+          <div><b>10,0–11,5 мкм</b><span>шаг пикселя восстановления λz/(NΔx)</span></div>
+          <div><b>1,2 мм</b><span>между плоскостями — отсюда взаимные помехи изображений</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Цифры ===================== -->
+  <section class="numbers" id="numbers">
+    <div class="container numbers-inner">
+      <h2 class="numbers-title">Что показали<br>замеры</h2>
+      <div class="number"><b>0,57</b><span>PCC на фото — потолок даже у долгой оптимизации</span></div>
+      <div class="number"><b>4×</b><span>больше целевых пикселей, чем степеней свободы ДОЭ</span></div>
+      <div class="number"><b>0,54</b><span>PCC «трудной» Луны вместо 0,26 у чистого GS</span></div>
+      <div class="number"><b>8 бит</b><span>метрики только после сохранения в PNG</span></div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <a class="brand" href="#top"><span class="brand-dot" aria-hidden="true"></span><span>Photonika</span></a>
+      <p class="muted small">Хакатон НИЯУ МИФИ · «Разработка нейросетевого метода синтеза дифракционных оптических элементов»</p>
+      <a class="muted small" href="/docs" target="_blank" rel="noopener">Документация API</a>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
