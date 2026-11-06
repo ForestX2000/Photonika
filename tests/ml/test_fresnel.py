@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import torch
 
-from app.config import DEFAULT_OPTICS, Optics
-from app.fresnel import (FresnelSingleFFT, fresnel_direct_np, fresnel_modulus_np, phase_to_uint8,
+from ml.config import DEFAULT_OPTICS, Optics
+from ml.fresnel import (FresnelSingleFFT, fresnel_direct_np, fresnel_modulus_np, phase_to_uint8,
                          uint8_to_phase, wrap_phase)
 
 

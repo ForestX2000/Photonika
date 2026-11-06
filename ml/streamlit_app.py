@@ -1,7 +1,7 @@
 """Streamlit-демо: 4 изображения → фазовый ДОЭ → 4 восстановления на 24,1–27,7 мм.
 
 Запуск из корня репозитория:
-    streamlit run app/ui.py
+    streamlit run ml/streamlit_app.py
 """
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ import streamlit as st  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from app.config import DEFAULT_OPTICS  # noqa: E402
-from app.data import fit_square  # noqa: E402
-from app.fresnel import FresnelSingleFFT, fresnel_modulus_np, uint8_to_phase  # noqa: E402
-from app.metrics import NORM_MODES, modulus_to_uint8  # noqa: E402
-from app.pipeline import METHOD_HELP, Result, run  # noqa: E402
+from ml.config import DEFAULT_OPTICS  # noqa: E402
+from ml.data import fit_square  # noqa: E402
+from ml.fresnel import FresnelSingleFFT, fresnel_modulus_np, uint8_to_phase  # noqa: E402
+from ml.metrics import NORM_MODES, modulus_to_uint8  # noqa: E402
+from ml.pipeline import METHOD_HELP, Result, run  # noqa: E402
 
 OPTICS = DEFAULT_OPTICS
 WEIGHTS = ROOT / "data" / "weights" / "doe_multiplane.pt"
@@ -38,7 +38,7 @@ if css.is_file():
 
 @st.cache_resource(max_entries=2)
 def load_net(path: str, mtime: int, device: str):
-    from app.model import load_model
+    from ml.model import load_model
 
     model, ckpt = load_model(path, device)
     return model, {k: ckpt.get(k) for k in ("model", "step", "best_score", "validation")}
@@ -113,7 +113,7 @@ sources = None
 if source_mode == "Тестовый набор":
     names = sorted(p.name for p in TESTSETS.iterdir() if p.is_dir()) if TESTSETS.is_dir() else []
     if not names:
-        st.warning("Нет data/testsets — выполните python -m app.cli make-testsets")
+        st.warning("Нет data/testsets — выполните python -m ml.cli make-testsets")
     else:
         name = st.selectbox("Набор", names, index=names.index("photos_classic") if "photos_classic" in names else 0)
         sources = np.stack([to_u8_image(TESTSETS / name / f"{i}.png") for i in range(1, 5)])

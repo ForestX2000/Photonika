@@ -1,6 +1,6 @@
 """Сравнение прогонов обучения (A/B) по metrics.jsonl.
 
-    python -m app.compare_runs data/runs/ab_*  [--plot data/runs/compare.png]
+    python -m ml.compare_runs data/runs/ab_*  [--plot data/runs/compare.png]
 """
 from __future__ import annotations
 

@@ -23,11 +23,11 @@ RUN pip install --no-cache-dir --upgrade "pip>=25.2" && \
 RUN pip install --no-cache-dir --timeout 600 --retries 10 -r requirements.txt
 
 COPY . .
-RUN python -m app.cli make-testsets > /dev/null
+RUN python -m ml.cli make-testsets > /dev/null
 
-VOLUME /app/data/weights
-VOLUME /app/results
+VOLUME /ml/data/weights
+VOLUME /ml/results
 EXPOSE 8000 8501
 
 # Сайт: API + фронтенд (Streamlit-демо — сервис streamlit в docker-compose.yml)
-CMD ["python", "-m", "server", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "backend", "--host", "0.0.0.0", "--port", "8000"]

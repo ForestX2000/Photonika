@@ -1,7 +1,7 @@
 """Ограниченное по времени возобновляемое обучение сети «4 изображения → фаза ДОЭ».
 
-    python -m app.training --minutes 480 --device cuda
-    python -m app.training --minutes 20 --input-mode raw --output data/runs/ab_raw   # A/B-прогон
+    python -m ml.training --minutes 480 --device cuda
+    python -m ml.training --minutes 20 --input-mode raw --output data/runs/ab_raw   # A/B-прогон
 
 Инфраструктура из технодемки: AMP, автоподбор батча, возобновление (--resume),
 атомарные чекпоинты, metrics.jsonl, status.json, остановка по файлу STOP,

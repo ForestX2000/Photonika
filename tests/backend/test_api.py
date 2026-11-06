@@ -12,13 +12,13 @@ from PIL import Image
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.config import DEFAULT_OPTICS, PHYSICS_VERSION  # noqa: E402
-from app.model import MultiPlaneUNet  # noqa: E402
-from server.main import create_app  # noqa: E402
+from ml.config import DEFAULT_OPTICS, PHYSICS_VERSION  # noqa: E402
+from ml.model import MultiPlaneUNet  # noqa: E402
+from backend.main import create_app  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 needs_testsets = pytest.mark.skipif(not (ROOT / "data/testsets/mephi_letters").is_dir(),
-                                    reason="run `python -m app.cli make-testsets` first")
+                                    reason="run `python -m ml.cli make-testsets` first")
 
 
 @pytest.fixture(scope="module")
@@ -112,3 +112,19 @@ def test_network_methods_when_weights_present(net_client):
 def test_frontend_is_served(client):
     r = client.get("/")
     assert r.status_code == 200
+
+
+def test_swagger_only_at_separate_url(client):
+    page = client.get("/").text
+    assert "/docs" not in page and "openapi" not in page        # с сайта на документацию ссылок нет
+    assert client.get("/api/docs").status_code == 200
+    assert client.get("/api/openapi.json").json()["info"]["title"] == "Photonika API"
+    assert client.get("/docs").status_code == 404
+
+
+def test_docs_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("PHOTONIKA_DOCS", "0")
+    c = TestClient(create_app(weights=tmp_path / "none.pt", device="cpu"))
+    assert c.get("/api/docs").status_code == 404
+    assert c.get("/api/openapi.json").status_code == 404
+    assert c.get("/api/health").json() == {"status": "ok"}

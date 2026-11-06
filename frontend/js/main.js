@@ -1,4 +1,4 @@
-// Photonika — логика сайта. Без сборки: ES-модуль, работает с API из server/ (тот же origin).
+// Photonika — логика сайта. Без сборки: ES-модуль, работает с API из backend/ (тот же origin).
 const API = "";                       // при отдельном фронтенд-сервере: "http://127.0.0.1:8000"
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -6,6 +6,14 @@ const fmt = (v, d = 3) => Number(v).toLocaleString("ru-RU", { minimumFractionDig
 const fmtMs = (ms) => ms >= 1000 ? `${fmt(ms / 1000, ms >= 10000 ? 1 : 2)} с` : `${fmt(ms, ms >= 100 ? 0 : 1)} мс`;
 
 const DEFAULT_DISTANCES = [24.1, 25.3, 26.5, 27.7];
+// PCC по плоскостям для картинок первого экрана (photos_classic, GS-200 + Adam-400; tools/make_web_assets.py)
+const HERO_PCC = [0.59, 0.57, 0.55, 0.54];
+const SET_NOTES = {
+  photos_classic: "Классика обработки изображений: самый трудный случай",
+  mephi_letters: "Крупные буквы на чёрном фоне — видно спекл",
+  text_binary: "Текст, силуэт и фигуры: резкие края",
+  digits: "Цифры «2026» — простые бинарные формы",
+};
 const METHOD_TAGS = {
   "net+gs": ["быстро", "fast"], "net": ["мгновенно", "fast"], "net+adam": ["точнее", ""],
   "gs+adam": ["эталон · долго", "slow"], "gs": ["классика", ""], "adam": ["долго", "slow"],
@@ -78,12 +86,18 @@ function initHero() {
     plates.forEach((p, k) => p.classList.toggle("active", k === i));
     items.forEach((li, k) => li.classList.toggle("active", k === i));
     progress.style.transform = `translateX(${i * 100}%)`;
+    $("#focusTitle").textContent = `Плоскость 0${i + 1}`;
+    $("#focusMeta").textContent = `z = ${zLabel(DEFAULT_DISTANCES[i])} · PCC ${fmt(HERO_PCC[i], 2)}`;
+    const bar = $("#focusBar");
+    bar.classList.remove("run"); void bar.offsetWidth; bar.classList.add("run");
   };
   const loop = () => { clearInterval(timer); timer = setInterval(() => show((current + 1) % 4), 2600); };
   items.forEach((li, i) => li.querySelector("button").addEventListener("click", () => { show(i); loop(); }));
   show(0);
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches) loop();
   initSpeckle($("#heroCanvas"));
+  const track = $("#marqueeTrack");
+  track.innerHTML += track.innerHTML;          // две копии — бесшовная прокрутка на −50 %
 }
 
 // Фон: дрейфующий «спекл» — мерцающие точки лазерного цвета
@@ -132,7 +146,7 @@ async function loadInfo() {
     chip.classList.add("err");
     text.textContent = "сервер недоступен";
     renderMethods(null);
-    toast("Не удалось подключиться к серверу. Запустите: python -m server");
+    toast("Не удалось подключиться к серверу. Запустите: python -m backend");
   }
 }
 
@@ -150,8 +164,35 @@ async function loadTestsets() {
       b.addEventListener("click", () => useTestset(s));
       box.appendChild(b);
     }
-    if (!sets.length) box.innerHTML = `<p class="muted small">Тестовых наборов нет: python -m app.cli make-testsets</p>`;
+    if (!sets.length) box.innerHTML = `<p class="muted small">Тестовых наборов нет: python -m ml.cli make-testsets</p>`;
+    renderGallery(sets);
   } catch { box.innerHTML = `<p class="muted small">Тестовые наборы недоступны.</p>`; }
+}
+
+// Большие карточки «Готовые наборы»: клик — набор в студию
+function renderGallery(sets) {
+  const box = $("#galleryCards");
+  const order = ["photos_classic", "mephi_letters", "text_binary", "digits"];
+  const featured = sets.filter((s) => !s.name.startsWith("random"))
+    .sort((x, y) => (order.indexOf(x.name) + 1 || 99) - (order.indexOf(y.name) + 1 || 99)).slice(0, 4);
+  box.innerHTML = "";
+  featured.forEach((s, k) => {
+    const card = document.createElement("button");
+    card.type = "button"; card.className = "set-card reveal";
+    card.innerHTML = `<div class="mosaic">${s.images.map((u) => `<img src="${API}${u}" alt="" loading="lazy">`).join("")}</div>
+      <span class="set-num glass">НАБОР №${k + 1}</span>
+      <div class="set-meta"><h3></h3><p></p><span class="set-go">Синтезировать
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>`;
+    card.querySelector("h3").textContent = s.title.split(":")[0];
+    card.querySelector("p").textContent = SET_NOTES[s.name] || s.title;
+    card.setAttribute("aria-label", `${s.title}: открыть в студии`);
+    card.addEventListener("click", () => {
+      useTestset(s);
+      $("#studio").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    box.appendChild(card);
+    requestAnimationFrame(() => card.classList.add("in"));
+  });
 }
 
 // ---------------------------------------------------------------- слоты изображений
@@ -494,8 +535,21 @@ function initResultsUi() {
   $("#playBtn").addEventListener("click", togglePlay);
 }
 
+// Подсветка под курсором: координаты в CSS-переменные --mx/--my
+function initSpotlight() {
+  const sel = ".studio, .how-card, .formula, .pipeline, .viewer, .stats, .doe-card, .table-card";
+  $$(sel).forEach((el) => el.classList.add("spot"));
+  document.addEventListener("pointermove", (e) => {
+    const el = e.target.closest?.(".spot");
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.setProperty("--mx", `${e.clientX - r.left}px`);
+    el.style.setProperty("--my", `${e.clientY - r.top}px`);
+  }, { passive: true });
+}
+
 function initReveal() {
-  const els = $$(".section-head, .studio, .how-card, .formula, .number, .numbers-title");
+  const els = $$(".section-head, .studio, .how-card, .formula, .number, .numbers-title, .pipeline");
   els.forEach((el) => el.classList.add("reveal"));
   const io = new IntersectionObserver((entries) => {
     for (const e of entries) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
@@ -509,5 +563,6 @@ initSlots();
 initRanges();
 initResultsUi();
 initReveal();
+initSpotlight();
 loadInfo().then(renderSlots);
 loadTestsets();

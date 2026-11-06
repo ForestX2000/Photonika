@@ -20,15 +20,15 @@ python -m venv .venv
 # .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-.\.venv\Scripts\python.exe -m app.cli info            # параметры физики, CUDA, наличие весов
+.\.venv\Scripts\python.exe -m ml.cli info            # параметры физики, CUDA, наличие весов
 .\.venv\Scripts\python.exe -m pytest -q               # тесты физики, метрик, методов, UI
 ```
 
 Синтез в формате сдачи (i-е изображение восстанавливается на i-м расстоянии):
 
 ```powershell
-python -m app.cli synth --inputs 1.png 2.png 3.png 4.png --out results/run1
-python -m app.cli synth --inputs ... --out results/run1 --method gs+adam   # без нейросети
+python -m ml.cli synth --inputs 1.png 2.png 3.png 4.png --out results/run1
+python -m ml.cli synth --inputs ... --out results/run1 --method gs+adam   # без нейросети
 ```
 
 Метод по умолчанию: `net+gs`, если есть веса `data/weights/doe_multiplane.pt`, иначе `gs+adam`.
@@ -46,7 +46,7 @@ python -m app.cli synth --inputs ... --out results/run1 --method gs+adam   # б�
 Проверка готового результата:
 
 ```powershell
-python -m app.cli verify --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png
+python -m ml.cli verify --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png
 python tools/verify_submission.py --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png --recon results/run1/recon_1.png results/run1/recon_2.png results/run1/recon_3.png results/run1/recon_4.png
 ```
 
@@ -64,7 +64,7 @@ $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathr
 Внешние множители не влияют на модуль, поэтому `|K_i| = |FFT(exp(jφ) · Q_i)|`, где
 `Q_i = exp(jπ(u²+v²)/(λ z_i))`. Координаты `(u, v)` отсчитываются от центра ДОЭ с шагом 10 мкм,
 результат центрируется `fftshift`, FFT нормирован как `ortho` (энергия сохраняется).
-Реализация: `app/fresnel.py` (numpy — эталон для сдачи, torch — дифференцируемая версия).
+Реализация: `ml/fresnel.py` (numpy — эталон для сдачи, torch — дифференцируемая версия).
 
 * **Критическое расстояние** `N·Δx²/λ = 24,06 мм`. Все расстояния из условия чуть больше него, поэтому
   квадратичная фаза дискретизирована без алиасинга и формула с одним FFT корректна.
@@ -78,7 +78,7 @@ $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathr
 
 **Протокол сравнения — ответ организаторов:** (1) сравниваются **амплитуды** (модуль поля |K|),
 а не интенсивности; (2) **каждое изображение перед сравнением нормируется на 1** — делится на свой
-максимум. Так считаем и мы (`app/metrics.py: pair_metrics`).
+максимум. Так считаем и мы (`ml/metrics.py: pair_metrics`).
 
 Метрики считаются **после 8-битного квантования**: синтезированная фаза сохраняется в `doe.png`,
 файл перечитывается, по нему заново считается восстановление, модуль сохраняется в
@@ -114,10 +114,10 @@ GS-200 + Adam-400, метрики по протоколу жюри, прежни
 
 ## Методы
 
-* **Многоплоскостный GS** (`app/baselines.py`): поле во всех 4 плоскостях → модуль заменяется на
+* **Многоплоскостный GS** (`ml/baselines.py`): поле во всех 4 плоскостях → модуль заменяется на
   целевой при сохранении фазы → каждая плоскость обратно распространяется к ДОЭ → сумма → фаза.
 * **Adam по фазе**: прямая оптимизация фазы ДОЭ по той же функции потерь, что и у сети.
-* **Нейросеть** (`app/model.py`, `MultiPlaneUNet`): U-Net на 4 уровня (128→64→32→16→8), свёртки
+* **Нейросеть** (`ml/model.py`, `MultiPlaneUNet`): U-Net на 4 уровня (128→64→32→16→8), свёртки
   с циклическим паддингом (FFT периодичен), GroupNorm. Выход — комплексная поправка `(a, b)`,
   фаза получается через `atan2` (без разрыва на ±π) и сразу лежит в [−π, π]. Голова
   инициализирована так, что **необученная сеть выдаёт ровно ∠S = одна итерация GS** — обучение
@@ -130,7 +130,7 @@ GS-200 + Adam-400, метрики по протоколу жюри, прежни
   * `raw` — только 4 изображения (контроль для A/B).
   * `--unroll K` — после U-Net ещё K стадий «шаг GS (4 FFT) + маленькая U-Net-поправка». При
     инициализации это ровно GS-K; время инференса фиксировано (никаких итераций до сходимости).
-* **Функция потерь** (`app/losses.py`) для каждой плоскости:
+* **Функция потерь** (`ml/losses.py`) для каждой плоскости:
   `MSE(s·|K|, A)/mean(A²) + (1 − PCC) + (1 − SSIM*)`, `s` — оптимальный масштаб (MSE оценивает
   форму, а не яркость), `SSIM*` — смесь локального SSIM и ИСС со слайда 3 по изображениям,
   нормированным на максимум (как у жюри, см. выше). Дифференцируемые SSIM совпадают с skimage
@@ -143,7 +143,7 @@ GS-200 + Adam-400, метрики по протоколу жюри, прежни
 
 ## Данные
 
-`app/data.py`, пул 20 000 изображений 128×128 (кэшируется в `data/pool/`):
+`ml/data.py`, пул 20 000 изображений 128×128 (кэшируется в `data/pool/`):
 символы из TTF-шрифтов (кириллица, латиница, цифры; 17 шрифтов Windows или DejaVu/Liberation в
 Docker) — 25 %, геометрические фигуры — 15 %, фото — 40 %, 1/f-текстуры — 20 % (организаторы:
 «изображения могут быть разнообразные, но не совсем простые» — упор на фото). Четвёрки
@@ -152,14 +152,14 @@ Docker) — 25 %, геометрические фигуры — 15 %, фото �
 и, если есть, папка `data/photos/`:
 
 ```powershell
-python -m app.data fetch-div2k          # DIV2K valid HR, 100 фото, ≈450 МБ → data/photos/div2k
-python -m app.data build-pool --count 20000
-python -m app.data preview              # data/pool_preview.png
+python -m ml.data fetch-div2k          # DIV2K valid HR, 100 фото, ≈450 МБ → data/photos/div2k
+python -m ml.data build-pool --count 20000
+python -m ml.data preview              # data/pool_preview.png
 ```
 
 После добавления фото удалите `data/pool/` или смените `--pool-size`, чтобы пул пересобрался.
 
-Тестовые наборы (`data/testsets/`, `python -m app.cli make-testsets`) в обучение не входят:
+Тестовые наборы (`data/testsets/`, `python -m ml.cli make-testsets`) в обучение не входят:
 `photos_classic` (camera, astronaut, coins, moon), `text_binary` (text, page, horse, фигуры),
 `mephi_letters` («МИФИ»), `digits` («2026»), `random_*` — случайные четвёрки с test-seed.
 Фиксированные val-четвёрки (буквы / фото / смешанные) генерируются по отдельному seed.
@@ -170,7 +170,7 @@ python -m app.data preview              # data/pool_preview.png
 # фаза 1: A/B-прогоны (4 × 20 мин): backprop / imgphase, без unroll и с unroll 4
 .\scripts\ab-test.ps1
 .\scripts\ab-test.ps1 -Minutes 15 -Only ab_backprop_b32,ab_imgphase_b32   # часть вариантов
-python -m app.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
+python -m ml.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
 
 # фаза 2: ночной прогон выбранного варианта в фоне (окно можно закрыть)
 .\scripts\train-local.ps1 -Minutes 480 -InputMode imgphase -Base 32   # вариант, выбранный по A/B
@@ -182,7 +182,7 @@ python -m app.compare_runs "data/runs/ab_*"          # таблица + data/run
 .\scripts\train-local.ps1 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2 -RunName training_v2 -WeightsName doe_multiplane_v2.pt
 ```
 
-Напрямую: `python -m app.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
+Напрямую: `python -m ml.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
 по val PCC + SSIM), `data/training/{last.pt, metrics.jsonl, status.json, config.json,
 final_report.json, preview.png, training.log}`. Возобновление проверяет совпадение версии
 физики и конфигурации сети. Финальный отчёт сравнивает сеть, сеть+20 и GS-50 на test-наборах
@@ -194,7 +194,7 @@ final_report.json, preview.png, training.log}`. Возобновление пр�
 ## Бенчмарк «качество / время»
 
 ```powershell
-python -m app.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters --device cuda
+python -m ml.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters --device cuda
 ```
 
 Время — медиана 3 запусков после прогрева, с синхронизацией CUDA. Результат: `results/bench/bench.md`,
@@ -203,11 +203,11 @@ python -m app.cli bench --sets data/testsets/photos_classic data/testsets/mephi_
 ## Сайт (фронтенд + API)
 
 ```powershell
-python -m server                       # http://127.0.0.1:8000  (документация API: /docs)
-python -m server --host 0.0.0.0 --device cuda --port 8000
+python -m backend                       # http://127.0.0.1:8000
+python -m backend --host 0.0.0.0 --device cuda --port 8000
 ```
 
-Сервер (`server/`, FastAPI) раздаёт фронтенд из `web/` и HTTP API поверх того же конвейера, что и CLI
+Сервер (`backend/`, FastAPI) раздаёт фронтенд из `frontend/` и HTTP API поверх того же конвейера, что и CLI
 (ДОЭ сохраняется в 8 бит, восстановление считается из него, метрики — по протоколу организаторов):
 
 | запрос | что делает |
@@ -219,18 +219,21 @@ python -m server --host 0.0.0.0 --device cuda --port 8000
 | `GET /api/results/{id}/slice.png?z_mm=26.5` | модуль поля на любом z (3D-просмотр) |
 | `GET /api/results/{id}/download.zip` | `doe.png`, `recon_1..4.png`, `source_1..4.png`, `metrics.json/csv` |
 
+Документация API (Swagger) — отдельная ссылка, с сайта на неё ссылок нет: http://127.0.0.1:8000/api/docs
+(также `/api/redoc`, `/api/openapi.json`); `PHOTONIKA_DOCS=0` выключает её совсем.
+
 Переменные окружения: `PHOTONIKA_DEVICE` (`auto`/`cpu`/`cuda`), `PHOTONIKA_WEIGHTS` (путь к весам),
 `PHOTONIKA_CORS` (через запятую — origin'ы, если фронтенд запущен отдельно). Вычисления идут по
 одному (блокировка), результаты хранятся в памяти (последние 32).
 
-Фронтенд (`web/`) — без сборки: `index.html`, `styles.css`, `app.js` (ES-модуль), шрифты Oswald и
+Фронтенд (`frontend/`) — без сборки: `index.html`, `styles.css`, `app.js` (ES-модуль), шрифты Oswald и
 Manrope с Google Fonts (без сети — системные). На сайте: загрузка 4 изображений (перетаскиванием или
 по одному) или тестовый набор, выбор метода и его параметров, ДОЭ (цветная фаза и сам `doe.png`),
 4 восстановления с PCC/SSIM (режимы «восстановление / лазер / исходное»), сравнение с GS-50 по
 времени и качеству, 3D-просмотр с ползунком z и анимацией пролёта, таблица метрик, скачивание
 архива. Картинки первого экрана — настоящий результат синтеза: `python tools/make_web_assets.py`.
 
-Запасной интерфейс — Streamlit: `streamlit run app/ui.py`.
+Запасной интерфейс — Streamlit: `streamlit run ml/streamlit_app.py`.
 
 ## Docker
 
@@ -246,7 +249,7 @@ docker compose --profile streamlit up --build streamlit     # Streamlit-демо
 
 CPU Intel i5-13420H, torch 2.15 (CPU), медиана 3 запусков после прогрева; метрики — по 8-битным
 `doe.png` и `recon_*.png` по протоколу жюри (амплитуды, нормировка на максимум)
-(`results/bench_cpu/`, команда `app.cli bench`):
+(`results/bench_cpu/`, команда `ml.cli bench`):
 
 | набор | метод | время, мс | PCC | SSIM | SSIM_global |
 |---|---|---:|---:|---:|---:|
@@ -287,7 +290,7 @@ PCC по плоскостям для фото: GS-200 — 0,58 / 0,61 / 0,56 / *
 
 Сделано и проверено на CPU (Intel i5-13420H, без NVIDIA GPU):
 
-- [x] Фаза 0: `app/fresnel.py` (torch + numpy) и тесты физики; CLI в формате сдачи на GS/Adam;
+- [x] Фаза 0: `ml/fresnel.py` (torch + numpy) и тесты физики; CLI в формате сдачи на GS/Adam;
       протокол метрик организаторов (амплитуды, нормировка на максимум) и лосс под него; генератор датасета, тестовые наборы.
 - [x] Фаза 1 (код): `MultiPlaneUNet` (вход backprop / imgphase / raw, выход через atan2, unroll),
       лосс MSE + PCC + SSIM с балансировкой плоскостей, режимы доуточнения `net+gs` и `net+adam`,
@@ -300,7 +303,7 @@ PCC по плоскостям для фото: GS-200 — 0,58 / 0,61 / 0,56 / *
 
 - [ ] A/B на GPU: `.\scripts\ab-test.ps1` (4 × 20 мин), выбрать вариант по `compare_runs`.
 - [ ] Ночной прогон выбранного варианта (`train-local.ps1 -Minutes 480`), go/no-go в T+16, дообучение v2.
-- [ ] Фото DIV2K (`python -m app.data fetch-div2k`) и пересборка пула до ночного прогона — теперь
+- [ ] Фото DIV2K (`python -m ml.data fetch-div2k`) и пересборка пула до ночного прогона — теперь
       важнее: организаторы сказали, что картинки будут «разнообразные, но не совсем простые».
 - [ ] Финальный бенчмарк на GPU, отчёт и слайды.
 - [x] Уточнено у организаторов: сравнение по амплитудам, каждое изображение нормируется на максимум.
@@ -311,23 +314,35 @@ PCC по плоскостям для фото: GS-200 — 0,58 / 0,61 / 0,56 / *
 ## Структура
 
 ```
-app/
-  config.py        параметры оптики из условия, версия физики
-  fresnel.py       Френель с одним FFT (numpy-эталон + torch), фаза ↔ 8 бит
-  metrics.py       PCC, SSIM, SSIM_global, перевод модуля в 0–255
-  losses.py        дифференцируемые PCC/SSIM, многоплоскостная функция потерь
-  baselines.py     многоплоскостный GS, Adam по фазе
-  model.py         MultiPlaneUNet (backprop / imgphase / raw, unroll)
-  data.py          генератор датасета, тестовые наборы, DIV2K
-  pipeline.py      конвейер в формате сдачи (с перечитыванием doe.png)
-  training.py      обучение (AMP, автобатч, resume, чекпоинты, metrics.jsonl)
-  cli.py           synth / verify / bench / info / make-testsets
-  compare_runs.py  сравнение прогонов
-  ui.py            Streamlit-демо (запасной интерфейс)
-server/            веб-сервер: FastAPI API + раздача фронтенда
-web/               фронтенд сайта
-scripts/           фоновое обучение на Windows, A/B
-tools/verify_submission.py   независимая проверка по PNG
-tests/             pytest
-data/testsets/     тестовые четвёрки PNG
+Photonika/
+├── frontend/                 сайт (без сборки, раздаётся бэкендом)
+│   ├── index.html            разметка страницы
+│   ├── css/styles.css        стили: тёмная тема, скругления, адаптив
+│   ├── js/main.js            логика: загрузка, синтез, результаты, 3D-просмотр
+│   └── assets/               картинки первого экрана, иконка
+├── backend/                  веб-сервер (FastAPI)
+│   ├── main.py               HTTP API + раздача frontend/
+│   ├── service.py            синтез, кэш результатов, рендер PNG
+│   └── __main__.py           запуск: python -m backend
+├── ml/                       физика, нейросеть, обучение, CLI
+│   ├── config.py             параметры оптики из условия, версия физики
+│   ├── fresnel.py            Френель с одним FFT (numpy-эталон + torch), фаза ↔ 8 бит
+│   ├── metrics.py            PCC, SSIM, SSIM_global, перевод модуля в 0–255
+│   ├── losses.py             дифференцируемые PCC/SSIM, многоплоскостная функция потерь
+│   ├── baselines.py          многоплоскостный GS, Adam по фазе
+│   ├── model.py              MultiPlaneUNet (imgphase / backprop / raw, unroll)
+│   ├── data.py               генератор датасета, тестовые наборы, DIV2K
+│   ├── pipeline.py           конвейер в формате сдачи (с перечитыванием doe.png)
+│   ├── training.py           обучение (AMP, автобатч, resume, чекпоинты, metrics.jsonl)
+│   ├── cli.py                synth / verify / bench / info / make-testsets
+│   ├── compare_runs.py       сравнение прогонов обучения
+│   └── streamlit_app.py      Streamlit-демо (запасной интерфейс)
+├── tests/
+│   ├── ml/                   физика, метрики, методы, Streamlit
+│   └── backend/              HTTP API
+├── scripts/                  PowerShell: фоновое обучение, статус, остановка, A/B
+├── tools/                    verify_submission.py (независимая проверка), make_web_assets.py
+├── docker/Dockerfile         образ: сайт (по умолчанию) или Streamlit
+├── docker-compose.yml        web (GPU), web-cpu, streamlit, synth
+└── data/                     testsets/ в git; веса, пул, прогоны — нет (.gitignore)
 ```

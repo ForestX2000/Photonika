@@ -6,12 +6,12 @@ import pytest
 import torch
 from PIL import Image
 
-from app.baselines import adam_phase, gs_multiplane
-from app.data import classic_testsets, load_png
-from app.fresnel import FresnelSingleFFT
-from app.losses import plane_metrics
-from app.model import MultiPlaneUNet
-from app.pipeline import run, write_outputs
+from ml.baselines import adam_phase, gs_multiplane
+from ml.data import classic_testsets, load_png
+from ml.fresnel import FresnelSingleFFT
+from ml.losses import plane_metrics
+from ml.model import MultiPlaneUNet
+from ml.pipeline import run, write_outputs
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +40,7 @@ def test_adam_improves_on_gs(letters):
     target = torch.from_numpy(letters / 255.0).float()[None]
     gs = gs_multiplane(target, prop, 30, seed=0)
     refined = adam_phase(target, prop, 60, init_phase=gs, lr=0.05)
-    from app.losses import multiplane_loss
+    from ml.losses import multiplane_loss
     # Adam оптимизирует функцию потерь (PCC + SSIM по протоколу жюри + MSE) — она должна упасть
     l0 = multiplane_loss(prop(gs), target)[0].mean()
     l1 = multiplane_loss(prop(refined), target)[0].mean()
@@ -59,7 +59,7 @@ def test_model_shapes_and_start_point(mode):
         # необученная сеть выдаёт ровно базовую фазу (∠S или 0)
         _, base = net.features(x)
         if base is None:  # imgphase: старт тоже ∠S, считаем его напрямую
-            from app.baselines import normalize_amplitude
+            from ml.baselines import normalize_amplitude
             base = torch.angle(net.prop.back(normalize_amplitude(x) * net.features.psi).sum(1))
         diff = torch.angle(torch.polar(torch.ones_like(phase), phase - base))
         assert diff.abs().max() < 1e-4
@@ -81,7 +81,7 @@ def test_model_gradient_flows():
     net = MultiPlaneUNet(base=8, unroll=1, stage_base=8)
     prop = FresnelSingleFFT()
     x = torch.rand(2, 4, 128, 128)
-    from app.losses import multiplane_loss
+    from ml.losses import multiplane_loss
     for _ in range(2):  # после первого шага голова уже не нулевая
         loss, _ = multiplane_loss(prop(net(x)), x)
         loss.mean().backward()

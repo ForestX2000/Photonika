@@ -1,4 +1,4 @@
-"""python -m server [--host 127.0.0.1] [--port 8000] [--device auto|cpu|cuda] [--weights path]"""
+"""python -m backend [--host 127.0.0.1] [--port 8000] [--device auto|cpu|cuda] [--weights path]"""
 import argparse
 import os
 
@@ -16,8 +16,8 @@ def main() -> None:
         os.environ["PHOTONIKA_WEIGHTS"] = args.weights
     import uvicorn
 
-    print(f"Photonika: http://{args.host}:{args.port}  (API: /docs)", flush=True)
-    uvicorn.run("server.main:app", host=args.host, port=args.port, reload=args.reload)
+    print(f"Photonika: http://{args.host}:{args.port}  (документация API: /api/docs)", flush=True)
+    uvicorn.run("backend.main:app", host=args.host, port=args.port, reload=args.reload)
 
 
 if __name__ == "__main__":
