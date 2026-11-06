@@ -1,0 +1,18 @@
+.git
+.venv
+venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/pool/
+data/photos/
+data/training/
+data/runs/
+results/
+# веса не запекаем в образ: монтируются томом ./data/weights (см. docker-compose.yml)
+data/weights/
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+**/*.onnx

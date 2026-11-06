@@ -1,0 +1,47 @@
+services:
+  # Демо с GPU (нужен NVIDIA Container Toolkit): docker compose up --build
+  doe-demo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8501:8501"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./data/weights:/app/data/weights
+      - ./results:/app/results
+
+  # Без GPU: docker compose --profile cpu up --build doe-demo-cpu   (порт 8502)
+  doe-demo-cpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cpu
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./data/weights:/app/data/weights
+      - ./results:/app/results
+    profiles: ["cpu"]
+
+  # Формат сдачи в контейнере:
+  #   docker compose --profile cpu run --rm synth --inputs data/testsets/photos_classic/1.png \
+  #     data/testsets/photos_classic/2.png data/testsets/photos_classic/3.png data/testsets/photos_classic/4.png --out results/demo
+  synth:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cpu
+    entrypoint: ["python", "-m", "app.cli", "synth"]
+    volumes:
+      - ./data/weights:/app/data/weights
+      - ./results:/app/results
+    profiles: ["cpu"]
