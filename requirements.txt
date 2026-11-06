@@ -1,0 +1,8 @@
+# torch ставится отдельно (см. README): CUDA-сборка для GPU или CPU-сборка.
+numpy>=1.26,<3
+scipy>=1.11,<2
+scikit-image>=0.22,<1
+Pillow>=10.1,<14
+matplotlib>=3.8,<4
+streamlit>=1.46,<2
+pytest>=8,<10

@@ -1,0 +1,167 @@
+/* --------------------------------------------------------------
+   Оформление перенесено из ASCII-generator-main (src/styles/)
+   Тёмная тема с зелёным матричным акцентом (#00ff41)
+   Шрифты: Share Tech Mono, Bebas Neue
+-------------------------------------------------------------- */
+
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&display=swap');
+
+:root {
+  --font-size: 16px;
+  --background: #000000;
+  --foreground: #c8c8c8;
+  --card: #090909;
+  --card-foreground: #c8c8c8;
+  --popover: #111111;
+  --popover-foreground: #c8c8c8;
+  --primary: #00ff41;
+  --primary-foreground: #0a0a0a;
+  --secondary: #090909;
+  --secondary-foreground: #c8c8c8;
+  --muted: #0f0f0f;
+  --muted-foreground: #555555;
+  --accent: #111111;
+  --accent-foreground: #c8c8c8;
+  --destructive: #ff1744;
+  --destructive-foreground: #ffffff;
+  --border: #111111;
+  --input: #090909;
+  --input-background: #090909;
+  --switch-background: #222222;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: #00ff41;
+  --radius: 0.625rem;
+  --sidebar: #050505;
+  --sidebar-foreground: #c8c8c8;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: var(--font-size);
+}
+
+/* Streamlit обёртка */
+.stApp {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Share Tech Mono', monospace;
+}
+
+/* Заголовки */
+h1, h2, h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+  font-family: 'Bebas Neue', 'Share Tech Mono', monospace !important;
+  letter-spacing: 0.05em;
+}
+
+h1 { font-size: 2rem !important; }
+h2 { font-size: 1.6rem !important; }
+h3 { font-size: 1.25rem !important; }
+
+/* Боковая панель */
+section[data-testid="stSidebar"] {
+  background: var(--sidebar) !important;
+  color: var(--sidebar-foreground) !important;
+  font-family: 'Share Tech Mono', monospace !important;
+}
+
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stNumberInput label,
+section[data-testid="stSidebar"] .stSlider label,
+section[data-testid="stSidebar"] .stCheckbox label {
+  color: var(--foreground) !important;
+  font-weight: var(--font-weight-medium) !important;
+}
+
+/* Кнопки */
+.stButton > button {
+  background: var(--card) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-weight: var(--font-weight-medium) !important;
+  transition: all 0.15s ease !important;
+}
+
+.stButton > button:hover {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 6px rgba(0, 255, 65, 0.12) !important;
+  transform: scale(1.02);
+}
+
+/* Инпуты и селекты */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stSelectbox > div > div > div,
+.stTextArea > div > textarea {
+  background: var(--input-background) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 0.65rem !important;
+  font-family: 'Share Tech Mono', monospace !important;
+}
+
+/* Слайдеры */
+.stSlider > div > div > div > input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 0.75rem;
+  background: rgba(0, 255, 65, 0.12);
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+.stSlider > div > div > div > input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 9999px;
+  background: var(--background);
+  border: 1px solid var(--primary);
+  box-shadow: 0 0 0 6px rgba(0, 255, 65, 0.12);
+}
+
+.stSlider > div > div > div > input[type="range"]::-webkit-slider-runnable-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Метрики */
+[data-testid="stMetricValue"] {
+  color: var(--primary) !important;
+  font-family: 'Bebas Neue', 'Share Tech Mono', monospace !important;
+}
+
+[data-testid="stMetricLabel"] {
+  color: var(--muted-foreground) !important;
+  font-family: 'Share Tech Mono', monospace !important;
+}
+
+/* Карточки / контейнеры */
+.element-container, .stBlock, .stColumn {
+  background: transparent !important;
+}
+
+/* Разделители */
+hr, .stDivider {
+  border-color: var(--border) !important;
+}
+
+/* Предупреждения и инфо-блоки */
+.stAlert {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--foreground) !important;
+}
+
+/* Подпись */
+.caption, .stCaption {
+  color: var(--muted-foreground) !important;
+  font-family: 'Share Tech Mono', monospace !important;
+}
