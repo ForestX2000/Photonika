@@ -27,6 +27,7 @@ RUN python -m app.cli make-testsets > /dev/null
 
 VOLUME /app/data/weights
 VOLUME /app/results
-EXPOSE 8501
+EXPOSE 8000 8501
 
-CMD ["streamlit", "run", "app/ui.py", "--server.address=0.0.0.0", "--server.port=8501"]
+# Сайт: API + фронтенд (Streamlit-демо — сервис streamlit в docker-compose.yml)
+CMD ["python", "-m", "server", "--host", "0.0.0.0", "--port", "8000"]
