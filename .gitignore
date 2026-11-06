@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+.ipynb_checkpoints
+.DS_Store
+.vscode/
+.idea/
+
+# Генерируемые данные и состояние обучения (воспроизводятся командами из README)
+data/pool/
+data/photos/
+data/training/
+data/runs/
+data/pool_preview.png
+results/
+
+# Веса и чекпоинты моделей НЕ публикуем (договорённость команды): любые форматы, в любой папке.
+# Передаём только напрямую внутри команды / экспертам. Не использовать git add -f.
+data/weights/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.npz
+*.part
+*.tmp
