@@ -44,6 +44,10 @@ Docker-команды ниже монтируют веса из репозито
 библиотеки Python, Node.js и системные зависимости устанавливаются внутри образа автоматически.
 При первой сборке нужен доступ к сети. Устанавливать Python, PyTorch или npm на хосте не требуется.
 
+Для арендованной A6000 доступен запуск с повторным использованием готового образа:
+[инструкция для сервера](docs/docker.md). Цель `train` не собирает сайт и не устанавливает
+Streamlit или тестовые зависимости. Обычный старт не переустанавливает библиотеки.
+
 Рекомендуемый переносимый вариант — **CPU**, без настройки GPU:
 
 ```powershell
@@ -151,7 +155,7 @@ docker run --rm photonika:cpu python -m ml.cli synth --inputs data/testsets/phot
 CUDA-библиотеки и PyTorch устанавливаются внутри образа:
 
 ```powershell
-docker build -f docker/Dockerfile -t photonika:cuda .
+docker build -f docker/Dockerfile --build-arg PYTHON_BASE=pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime --build-arg TORCH_PREINSTALLED=1 -t photonika:cuda .
 ```
 
 В команде синтеза добавьте `--gpus all` после `docker run`, замените образ на `photonika:cuda`,
@@ -160,19 +164,22 @@ docker build -f docker/Dockerfile -t photonika:cuda .
 Веб-интерфейс (FastAPI + React), CPU, <http://localhost:8000>:
 
 ```powershell
-docker compose --profile cpu up --build web-cpu
+docker compose --profile cpu build web-cpu
+docker compose --profile cpu up -d --no-build web-cpu
 ```
 
 Веб-интерфейс с GPU, тот же адрес:
 
 ```powershell
-docker compose up --build web
+docker compose build web
+docker compose up -d --no-build web
 ```
 
 Альтернативное Streamlit-демо, <http://localhost:8501>:
 
 ```powershell
-docker compose --profile streamlit up --build streamlit
+docker compose --profile streamlit build streamlit
+docker compose --profile streamlit up -d --no-build streamlit
 ```
 
 Останавливайте один веб-сервис перед запуском другого на порту 8000. Веб-сервисы монтируют

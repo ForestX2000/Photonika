@@ -1,9 +1,14 @@
 services:
   # Сайт (API + фронтенд) с GPU (нужен NVIDIA Container Toolkit): docker compose up --build web
   web:
+    image: photonika:cuda
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: runtime
+      args:
+        PYTHON_BASE: pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+        TORCH_PREINSTALLED: "1"
     ports:
       - "8000:8000"
     deploy:
@@ -19,9 +24,11 @@ services:
 
   # Сайт без GPU: docker compose --profile cpu up --build web-cpu   (http://localhost:8000)
   web-cpu:
+    image: photonika:cpu
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: runtime
       args:
         TORCH_INDEX: https://download.pytorch.org/whl/cpu
     ports:
@@ -35,9 +42,11 @@ services:
 
   # Streamlit-демо (запасной интерфейс): docker compose --profile streamlit up --build streamlit
   streamlit:
+    image: photonika:streamlit
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: streamlit
       args:
         TORCH_INDEX: https://download.pytorch.org/whl/cpu
     ports:
@@ -51,9 +60,11 @@ services:
   #   docker compose --profile cpu run --rm synth --inputs data/testsets/photos_classic/1.png \
   #     data/testsets/photos_classic/2.png data/testsets/photos_classic/3.png data/testsets/photos_classic/4.png --out results/demo
   synth:
+    image: photonika:cpu
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: runtime
       args:
         TORCH_INDEX: https://download.pytorch.org/whl/cpu
     entrypoint: ["python", "-m", "ml.cli", "synth"]

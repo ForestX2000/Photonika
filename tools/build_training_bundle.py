@@ -30,11 +30,14 @@ FILE_PATTERNS = (
 )
 REQUIRED_FILES = (
     "requirements.txt", "pytest.ini", "README.md", "LICENSE",
+    "requirements-core.txt", "requirements-web.txt", "requirements-demo.txt", "requirements-dev.txt",
+    "docker/Dockerfile", ".dockerignore",
     "ml/__init__.py", "ml/model.py", "ml/physics_model.py", "ml/training.py",
     "ml/data.py", "ml/fresnel.py", "ml/losses.py", "ml/config.py",
     "tools/a6000.py", "tools/benchmark_models.py", "tools/verify_submission.py",
     "tools/evaluation_runtime.py",
     "tools/synthesize_a6000.py",
+    "scripts/docker-a6000.sh",
     "tools/build_training_bundle.py", ENTRYPOINT,
 )
 FORBIDDEN_SUFFIXES = {
@@ -48,7 +51,8 @@ def _eligible(root: Path, path: Path) -> bool:
     relative = path.relative_to(root)
     return (path.is_file() and not path.is_symlink()
             and path.resolve().is_relative_to(root)
-            and not any(part.startswith(".") for part in relative.parts)
+            and (relative.as_posix() == ".dockerignore" or
+                 not any(part.startswith(".") for part in relative.parts))
             and path.suffix.lower() not in FORBIDDEN_SUFFIXES)
 
 
