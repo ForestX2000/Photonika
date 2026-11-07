@@ -139,7 +139,7 @@ def restore_rng(state: dict, sampler: QuadSampler, device: torch.device) -> None
 
 
 def choose_batch(net, prop, sampler, device, requested, limit, loss_kwargs, *,
-                 max_batch=128, **loss_options) -> int:
+                 max_batch=128, memory_budget_bytes=None, **loss_options) -> int:
     """Select measured throughput, preserving weights, gradients and RNG."""
     if requested != "auto":
         value = int(requested)
@@ -186,7 +186,8 @@ def choose_batch(net, prop, sampler, device, requested, limit, loss_kwargs, *,
                 throughput = candidate / elapsed
                 peak = torch.cuda.max_memory_allocated(device)
                 total = torch.cuda.get_device_properties(device).total_memory
-                if peak > total * 0.75:
+                headroom_limit = min(total * 0.75, memory_budget_bytes * 0.88) if memory_budget_bytes else total * 0.75
+                if peak > headroom_limit:
                     print(f"[batch] {candidate}: reserving memory headroom for teacher/validation", flush=True)
                     break
                 measurements.append((candidate, throughput))
@@ -250,7 +251,8 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
           teacher_weight: float = 0.0, teacher_every: int = 16,
           teacher_gs_iters: int = 8, teacher_adam_steps: int = 8,
           auto_batch_max: int = 128, auto_batch_seconds: float = 60.0,
-          preview: bool = True) -> Path:
+          preview: bool = True, threads: int = 8, pool_in_ram: bool = False,
+          vram_limit_gib: float | None = None) -> Path:
     if min(minutes, lr, pool_size, val_per_kind, base, eval_every) <= 0:
         raise ValueError("minutes, lr, pool_size, val_per_kind, base and eval_every must be positive")
     if max_steps is not None and max_steps < 0:
@@ -265,6 +267,8 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         raise ValueError("invalid supervision, teacher or EMA setting")
     if deep_supervision and (architecture != "physics-unrolled" or model_version != 2):
         raise ValueError("deep supervision requires physics-unrolled model_version=2")
+    if threads < 1 or (vram_limit_gib is not None and (not math.isfinite(vram_limit_gib) or vram_limit_gib <= 0)):
+        raise ValueError("threads and optional VRAM limit must be positive")
     output, weights = Path(output), Path(weights)
     output.mkdir(parents=True, exist_ok=True)
     weights.parent.mkdir(parents=True, exist_ok=True)
@@ -288,9 +292,15 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.set_num_threads(min(8, os.cpu_count() or 1))
+    torch.set_num_threads(min(threads, os.cpu_count() or 1))
+    memory_budget_bytes = None
     if dev.type == "cuda":
-        torch.cuda.set_per_process_memory_fraction(0.85, dev)
+        total_memory = torch.cuda.get_device_properties(dev).total_memory
+        free_memory = torch.cuda.mem_get_info(dev)[0]
+        memory_budget_bytes = min(total_memory * 0.85, free_memory * 0.90)
+        if vram_limit_gib is not None:
+            memory_budget_bytes = min(memory_budget_bytes, vram_limit_gib * 2**30)
+        torch.cuda.set_per_process_memory_fraction(memory_budget_bytes / total_memory, dev)
         # Auto-batch probes several shapes. Exhaustive cuDNN algorithm searches
         # for every BF16 shape can consume an entire short screening budget.
         torch.backends.cudnn.benchmark = False
@@ -374,6 +384,9 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         else:
             images, cats = load_or_build_pool(pool_size, seed=0)
             raw_val = fixed_quads("val", val_per_kind)
+        if pool_in_ram:
+            images, cats = np.array(images, copy=True), np.array(cats, copy=True)
+            print(f"[data] resident RAM pool: {images.nbytes / 2**30:.2f} GiB", flush=True)
         sampler = QuadSampler(images, cats, seed=seed + step)
         val = {k: torch.from_numpy(v.astype(np.float32) / 255.0)
                for k, v in raw_val.items()}
@@ -382,7 +395,7 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
                             deep_supervision=deep_supervision)
         actual_batch = choose_batch(net, prop, sampler, dev, str(batch),
                                     min(train_deadline, time.monotonic() + auto_batch_seconds), loss_kwargs,
-                                    max_batch=auto_batch_max, **loss_options)
+                                    max_batch=auto_batch_max, memory_budget_bytes=memory_budget_bytes, **loss_options)
         opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-5)
         if checkpoint:
             opt.load_state_dict(checkpoint["optimizer"])
@@ -394,6 +407,9 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
                                                  effective_batch=actual_batch * grad_accum,
                                                  activation_checkpointing=activation_checkpointing,
                                                  preview=preview,
+                                                 threads=torch.get_num_threads(), pool_in_ram=pool_in_ram,
+                                                 vram_limit_gib=vram_limit_gib,
+                                                 memory_budget_bytes=memory_budget_bytes,
                                                  resume=resume, init_weights=init_weights))
 
         def save_last():
@@ -546,6 +562,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--auto-batch-max", type=int, default=128)
     ap.add_argument("--auto-batch-seconds", type=float, default=60.0)
     ap.add_argument("--no-preview", action="store_true", help="reserve classic examples for the final benchmark")
+    ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--pool-in-ram", action="store_true")
+    ap.add_argument("--vram-limit-gib", type=float, default=None)
     ap.add_argument("--input-mode", choices=INPUT_MODES, default="imgphase")
     ap.add_argument("--unroll", type=int, default=4)
     ap.add_argument("--stage-base", type=int, default=16)
@@ -576,7 +595,8 @@ def main(argv: list[str] | None = None) -> None:
           grad_accum=a.grad_accum, photo_split=a.photo_split, deep_supervision=a.deep_supervision,
           quantization_aware=a.quantization_aware, ema_decay=a.ema_decay, teacher_weight=a.teacher_weight,
           teacher_every=a.teacher_every, teacher_gs_iters=a.teacher_gs_iters, teacher_adam_steps=a.teacher_adam_steps,
-          auto_batch_max=a.auto_batch_max, auto_batch_seconds=a.auto_batch_seconds, preview=not a.no_preview)
+          auto_batch_max=a.auto_batch_max, auto_batch_seconds=a.auto_batch_seconds, preview=not a.no_preview,
+          threads=a.threads, pool_in_ram=a.pool_in_ram, vram_limit_gib=a.vram_limit_gib)
 
 if __name__ == "__main__":
     main()

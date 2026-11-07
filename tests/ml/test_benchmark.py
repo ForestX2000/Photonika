@@ -143,6 +143,33 @@ def test_source_protocol_requests_held_out_source_split_and_records_manifest(mon
     assert report["protocol"]["split_scope"] == "content-disjoint photograph sources"
 
 
+def test_hybrid_profile_budgets_are_recorded_without_random_classical_start(monkeypatch, tmp_path):
+    import ml.model
+    import ml.pipeline
+    import tools.benchmark_models as tool
+
+    path = tmp_path / "weights.pt"
+    path.write_bytes(b"fixture")
+    monkeypatch.setattr(tool, "fixed_quads", lambda *a: {"photos": np.zeros((1, 4, 8, 8), dtype=np.uint8)})
+    monkeypatch.setattr(ml.model, "load_model", lambda *a: (object(), {"optics": DEFAULT_OPTICS.as_dict(), "model": {}}))
+    calls = []
+
+    def fake_run(source, method, **kwargs):
+        calls.append((method, kwargs))
+        return SimpleNamespace(rows=[{"pcc": .3, "ssim": .2}] * 4, time_ms=2.)
+
+    monkeypatch.setattr(ml.pipeline, "run", fake_run)
+    profile = {"label": "quality", "method": "net+gs+adam", "params": {"refine_steps": 3, "adam_steps": 7}}
+    report = benchmark([path], device="cpu", count=1, gs_iters=1, classic=False, neural_profiles=[profile])
+    assert [v["method"] for v in report["variants"]] == ["gs", "net", "net+gs+adam"]
+    assert report["variants"][-1]["params"] == profile["params"]
+    assert "checkpoint" in report["variants"][-1]
+    for method, params in calls:
+        if method == "net+gs+adam":
+            assert params["model"] is not None
+            assert params["refine_steps"] == 3 and params["adam_steps"] == 7
+
+
 @pytest.mark.parametrize("kwargs", [{"count": 0}, {"gs_iters": 0},
                                     {"refine_steps": -1}, {"adam_steps": -1},
                                     {"seeds": ()}, {"seeds": (1, 1)}])

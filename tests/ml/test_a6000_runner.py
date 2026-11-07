@@ -24,6 +24,11 @@ def test_dry_run_needs_no_gpu_or_output_directory(tmp_path, monkeypatch):
     assert len(plan["candidates"]) == 3
     assert plan["candidates"][-1]["base"] == 64
     assert plan["nominal_main_training_minutes"] == 120
+    assert plan["common_training"]["threads"] == 12
+    assert plan["common_training"]["pool_in_ram"] is True
+    assert plan["common_training"]["vram_limit_gib"] == 40
+    assert plan["common_training"]["pool_size"] == 100000
+    assert plan["selection_validation"]["neural_profiles"][-1]["method"] == "net+gs+adam"
 
 
 def test_invalid_budget_is_rejected():
@@ -31,9 +36,35 @@ def test_invalid_budget_is_rejected():
         a6000.make_plan(0)
 
 
+def test_hybrid_policy_is_selected_on_validation_and_classical_variants_are_excluded():
+    report = {"variants": [
+        {"method": "gs+adam", "summary": {"pcc": 1., "ssim": 1.}, "checkpoint": {"path": "forbidden.pt"}},
+        {"method": "net", "summary": {"pcc": .5, "ssim": .2}, "checkpoint": {"path": "small.pt"}},
+        {"method": "net+gs+adam", "params": {"refine_steps": 25, "adam_steps": 50},
+         "summary": {"pcc": .7, "ssim": .3, "synthesis_time_ms_median": 40.}, "checkpoint": {"path": "large.pt"}},
+    ]}
+    chosen = a6000.select_neural_variant(report)
+    assert chosen["method"] == "net+gs+adam"
+    assert chosen["checkpoint"]["path"] == "large.pt"
+    assert chosen["params"]["adam_steps"] == 50
+
+
+def test_low_ssd_space_is_rejected_and_budget_fits_the_reported_disk(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(a6000.shutil, "disk_usage", lambda _: SimpleNamespace(free=2**30))
+    with pytest.raises(RuntimeError, match="free SSD"):
+        a6000.check_storage(tmp_path, 100000)
+    monkeypatch.setattr(a6000.shutil, "disk_usage", lambda _: SimpleNamespace(free=30 * 2**30))
+    budget = a6000.check_storage(tmp_path, 100000)
+    assert budget["pool_bytes"] == 100000 * 128 * 128
+    assert 8 * 2**30 < budget["required_bytes"] < 30 * 2**30
+
+
 def fake_backend(monkeypatch, *, main_score=0.7, fail_large=False):
-    calls = {"train": [], "benchmark": []}
+    calls = {"train": [], "benchmark": [], "pool": []}
     monkeypatch.setattr(a6000, "preflight", lambda d, p: {"device": "cpu", "gpu": {"name": "fake"}})
+    monkeypatch.setattr(a6000, "check_storage", lambda *a: {"free_bytes": 20 * 2**30})
+    monkeypatch.setattr(a6000, "prepare_pool", lambda count: calls["pool"].append(count))
     monkeypatch.setattr(a6000, "dataset_info", lambda: {"version": "fake-v1", "sha256": "source-hash",
                         "counts": {"train": 80, "val": 10, "test": 10}, "sources": []})
 
@@ -76,6 +107,7 @@ def test_selects_on_validation_then_tests_once_and_resumes_without_retraining(tm
     a6000.run(**options, resume=True)
     assert len(calls["train"]) == 4
     assert len(calls["benchmark"]) == 5
+    assert calls["pool"] == [100000]
 
 
 def test_main_training_is_not_assumed_better_than_pilot(tmp_path, monkeypatch):
@@ -83,6 +115,32 @@ def test_main_training_is_not_assumed_better_than_pilot(tmp_path, monkeypatch):
     result = a6000.run(minutes=30, device="cpu", precision="fp32", skip_fetch=True,
                        output=tmp_path / "run", weights=tmp_path / "export.pt")
     assert "capacity_b64_u8" in result["export"]["selected_from"]
+
+
+def test_selected_hybrid_policy_is_exported_before_test_and_reused_unchanged(tmp_path, monkeypatch):
+    calls = fake_backend(monkeypatch)
+    original = a6000.run_benchmark
+
+    def benchmark(paths, *, device, parameters):
+        report = original(paths, device=device, parameters=parameters)
+        if parameters["split"] == "val" and parameters.get("neural_profiles"):
+            report["variants"].append({"method": "net+gs+adam", "label": "validated-hybrid",
+                "params": {"refine_steps": 3, "adam_steps": 5},
+                "checkpoint": {"path": str(paths[-1].resolve())},
+                "summary": {"pcc": .8, "ssim": .3, "synthesis_time_ms_median": 20.}})
+        return report
+
+    monkeypatch.setattr(a6000, "run_benchmark", benchmark)
+    output = tmp_path / "run"
+    result = a6000.run(minutes=30, device="cpu", precision="fp32", skip_fetch=True,
+                       output=output, weights=tmp_path / "export.pt")
+    preset = json.loads((output / "inference.json").read_text(encoding="utf-8"))
+    assert preset["selected_on"] == "validation" and preset["neural_primary"] is True
+    assert preset["profile"]["method"] == "net+gs+adam"
+    assert preset["profile"]["params"] == {"refine_steps": 3, "adam_steps": 5}
+    assert calls["benchmark"][-1][1]["split"] == "test"
+    assert calls["benchmark"][-1][1]["neural_profiles"] == [preset["profile"]]
+    assert result["export"]["neural_profile"] == preset["profile"]
 
 
 def test_failed_large_pilot_preserves_smaller_candidate(tmp_path, monkeypatch):

@@ -36,6 +36,7 @@ def test_real_v2_training_resumes_ema_optimizer_and_accumulated_samples(tmp_path
                    base=4, stage_base=4, unroll=1, spectral_modes=3, batch="1", grad_accum=2,
                    pool_size=12, val_per_kind=1, output=tmp_path / "run", weights=tmp_path / "best.pt",
                    activation_checkpointing=True, quantization_aware=True, deep_supervision=0.1,
+                   threads=2, pool_in_ram=True,
                    ema_decay=0.95, teacher_weight=0.05, teacher_every=1, teacher_gs_iters=1,
                    teacher_adam_steps=1)
     training.train(**options, max_steps=1)
@@ -64,6 +65,8 @@ def test_real_v2_training_resumes_ema_optimizer_and_accumulated_samples(tmp_path
     report = json.loads((options["output"] / "config.json").read_text(encoding="utf-8"))
     assert report["effective_batch"] == 2
     assert report["activation_checkpointing"] is True
+    assert report["pool_in_ram"] is True
+    assert report["threads"] <= 2
     model, best = load_model(options["weights"])
     assert best["weight_source"] == "ema"
     with torch.inference_mode():
