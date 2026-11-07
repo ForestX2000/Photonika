@@ -131,6 +131,12 @@ class SynthesisService:
         self.cache_size = cache_size
         self.weights = Path(weights)
         self.model, self.model_info = None, None
+        self._model_loaded = False
+
+    def _ensure_model(self):
+        if self._model_loaded:
+            return
+        self._model_loaded = True
         self.reload_model()
 
     # -- модель ----------------------------------------------------------------
@@ -151,6 +157,7 @@ class SynthesisService:
 
     @property
     def has_net(self) -> bool:
+        self._ensure_model()
         return self.model is not None
 
     def methods(self) -> list[dict]:
@@ -162,6 +169,7 @@ class SynthesisService:
         return "net+gs" if self.has_net else "gs+adam"
 
     def info(self) -> dict:
+        self._ensure_model()
         import torch
 
         return {
