@@ -1,7 +1,7 @@
 # Фаза 1 плана: короткие A/B-прогоны (по умолчанию 4 × 20 минут, последовательно на одной GPU).
 #   .\scripts\ab-test.ps1
 #   .\scripts\ab-test.ps1 -Minutes 15 -Only ab_imgphase_b32,ab_backprop_unroll4
-# Сравнить: python -m app.compare_runs "data/runs/ab_*"
+# Сравнить: python -m ml.compare_runs "data/runs/ab_*"
 param([int]$Minutes = 20, [ValidateSet('cuda', 'cpu')][string]$Device = 'cuda', [string[]]$Only = @())
 $ErrorActionPreference = 'Stop'
 $RepoDirectory = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -20,11 +20,11 @@ try {
     foreach ($Run in $Runs) {
         $Out = Join-Path $RepoDirectory "data\runs\$($Run.Name)"
         Write-Output "=== $($Run.Name): $Minutes min ==="
-        & $PythonPath -u -m app.training --device $Device --minutes $Minutes @($Run.Args) `
+        & $PythonPath -u -m ml.training --device $Device --minutes $Minutes @($Run.Args) `
             --output $Out --weights (Join-Path $Out 'weights.pt') --eval-every 60
         if ($LASTEXITCODE -ne 0) { throw "Run $($Run.Name) failed" }
     }
-    & $PythonPath -m app.compare_runs (Join-Path $RepoDirectory 'data\runs\ab_*')
+    & $PythonPath -m ml.compare_runs (Join-Path $RepoDirectory 'data\runs\ab_*')
 } finally {
     Pop-Location
 }

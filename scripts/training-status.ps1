@@ -11,7 +11,7 @@ if (Test-Path -LiteralPath $ProcessPath -PathType Leaf) {
     $Recorded = Get-Content -LiteralPath $ProcessPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $RecordedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$Recorded.pid)"
     $IsTraining = $RecordedProcess -and $RecordedProcess.CommandLine -and
-        $RecordedProcess.CommandLine -match '(?i)-m\s+app\.training\b' -and
+        $RecordedProcess.CommandLine -match '(?i)-m\s+ml\.training\b' -and
         $RecordedProcess.CommandLine.Contains($RunDirectory)
     if ($IsTraining) {
         Write-Output "Running: PID $($Recorded.pid), started $($Recorded.started_at), limit $($Recorded.minutes) min."

@@ -8,7 +8,7 @@ data/pool/
 data/photos/
 data/training/
 data/runs/
-results/
+/results/
 # веса не запекаем в образ: монтируются томом ./data/weights (см. docker-compose.yml)
 data/weights/
 **/*.pt
@@ -16,3 +16,5 @@ data/weights/
 **/*.ckpt
 **/*.safetensors
 **/*.onnx
+frontend/node_modules/
+frontend/dist/
