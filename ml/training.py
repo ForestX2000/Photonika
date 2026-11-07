@@ -1,18 +1,5 @@
-"""Ограниченное по времени возобновляемое обучение сети «4 изображения → фаза ДОЭ».
-
-    python -m ml.training --minutes 480 --device cuda
-    python -m ml.training --minutes 20 --input-mode raw --output data/runs/ab_raw   # A/B-прогон
-
-Инфраструктура из технодемки: AMP, автоподбор батча, возобновление (--resume),
-атомарные чекпоинты, metrics.jsonl, status.json, остановка по файлу STOP,
-запрет сна Windows на время обучения.
-
-Обучение без разметки: сеть → фаза → дифференцируемый Френель на 4 расстояниях →
-multiplane_loss (MSE с оптимальным масштабом + (1−PCC) + (1−SSIM), балансировка плоскостей).
-Лучшие веса выбираются по фиксированному val-набору (буквы / фото / смешанные).
-"""
+"""Ограниченное по времени возобновляемое обучение сети «4 изображения → фаза ДОЭ»."""
 from __future__ import annotations
-
 import argparse
 import ctypes
 import json
@@ -35,12 +22,10 @@ from .model import INPUT_MODES, MultiPlaneUNet
 
 ROOT = Path(__file__).resolve().parent.parent
 
-
 def atomic_json(path: Path, value: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     os.replace(tmp, path)
-
 
 def atomic_save(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,24 +33,14 @@ def atomic_save(path: Path, value: dict) -> None:
     torch.save(value, tmp)
     os.replace(tmp, path)
 
-
-def amp_context(device: torch.device):
-    return torch.autocast("cuda", dtype=torch.float16) if device.type == "cuda" else nullcontext()
-
-
 def sync(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
-
 def compute_loss(net, prop, x, device, loss_kwargs):
-    with amp_context(device):
-        phase = net(x)
-    # комплексный FFT считаем во float32 вне autocast
+    phase = net(x)  # БЕЗ AMP!
     return multiplane_loss(prop(phase.float()), x, **loss_kwargs)
 
-
-@torch.inference_mode()
 def evaluate(net, prop, val: dict[str, torch.Tensor], batch: int, device: torch.device, loss_kwargs) -> dict:
     net.eval()
     out = {}
@@ -73,8 +48,7 @@ def evaluate(net, prop, val: dict[str, torch.Tensor], batch: int, device: torch.
         losses, pccs, ssims = [], [], []
         for start in range(0, len(quads), batch):
             x = quads[start:start + batch].to(device)
-            with amp_context(device):
-                phase = net(x)
+            phase = net(x)  # БЕЗ AMP!
             mod = prop(phase.float())
             loss, _ = multiplane_loss(mod, x, **loss_kwargs)
             p, s = plane_metrics(mod, x)
@@ -89,84 +63,6 @@ def evaluate(net, prop, val: dict[str, torch.Tensor], batch: int, device: torch.
     out["ssim"] = float(np.mean([out[k]["ssim"] for k in val]))
     return out
 
-
-def choose_batch(net, prop, sampler, device, requested, limit, loss_kwargs) -> int:
-    if requested != "auto":
-        value = int(requested)
-        if value < 1:
-            raise ValueError("batch must be positive")
-        return value
-    if device.type != "cuda":
-        return 4
-    original = {k: v.detach().clone() for k, v in net.state_dict().items()}
-    measurements = []
-    for candidate in (4, 8, 12, 16, 24, 32, 48):
-        if time.monotonic() >= limit:
-            break
-        opt = torch.optim.AdamW(net.parameters(), lr=0.0)
-        scaler = torch.amp.GradScaler("cuda")
-        try:
-            net.train()
-            torch.cuda.reset_peak_memory_stats()
-            x = torch.from_numpy(sampler.sample(candidate)).to(device)
-            sync(device)
-            started = time.monotonic()
-            for _ in range(3):
-                opt.zero_grad(set_to_none=True)
-                loss, _ = compute_loss(net, prop, x, device, loss_kwargs)
-                scaler.scale(loss.mean()).backward()
-                scaler.step(opt)
-                scaler.update()
-            sync(device)
-            rate = candidate * 3 / (time.monotonic() - started)
-            peak = torch.cuda.max_memory_reserved() / 2 ** 30
-            measurements.append((rate, candidate))
-            print(f"[batch] {candidate}: {rate:.1f} quads/s, reserved {peak:.2f} GiB", flush=True)
-        except torch.OutOfMemoryError:
-            print(f"[batch] {candidate}: VRAM limit", flush=True)
-            break
-        finally:
-            net.zero_grad(set_to_none=True)
-            del opt, scaler
-            torch.cuda.empty_cache()
-    net.load_state_dict(original)
-    if not measurements:
-        raise RuntimeError("No batch fits in GPU memory")
-    best_rate = max(r for r, _ in measurements)
-    # берём наименьший батч с пропускной способностью не хуже 90 % лучшей: больше шагов оптимизатора
-    chosen = min(c for r, c in measurements if r >= 0.9 * best_rate)
-    print(f"[batch] selected {chosen}", flush=True)
-    return chosen
-
-
-@torch.inference_mode()
-def final_report(net, output: Path, metadata: dict, device: torch.device, deadline: float) -> dict:
-    """Оценка на test-наборах в формате сдачи (8 бит) и сравнение с GS-50; не влияет на выбор весов."""
-    from .cli import bench_methods
-    from .data import classic_testsets
-    from .pipeline import run, save_preview
-
-    net.eval()
-    sets = classic_testsets()
-    for kind, quads in fixed_quads("test", per_kind=2).items():
-        for k, q in enumerate(quads):
-            sets[f"random_{kind}_{k}"] = q
-    configs = [("net", {}), ("net+gs", {"refine_steps": 10}), ("gs", {"gs_iters": 10}), ("gs", {"gs_iters": 50})]
-    if time.monotonic() < deadline:
-        with torch.inference_mode(False):
-            rows = bench_methods(sets, str(device), net, repeats=1, configs=configs)
-    else:
-        rows = []
-    if "photos_classic" in sets:
-        with torch.inference_mode(False):
-            res = run(sets["photos_classic"], "net", model=net, device=str(device))
-        save_preview(res, output / "preview.png")
-    report = {"metadata": metadata, "test": rows,
-              "note": "Метрики по 8-битным ДОЭ и восстановлениям, нормировка lsq; test-наборы в обучение не входят."}
-    atomic_json(output / "final_report.json", report)
-    return report
-
-
 def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode: str = "imgphase",
           unroll: int = 0, stage_base: int = 16,
           batch="auto", lr: float = 1e-3, pool_size: int = 20000, val_per_kind: int = 16,
@@ -174,10 +70,6 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
           seed: int = 42, eval_every: float = 120.0, w_mse: float = 1.0, w_pcc: float = 1.0,
           w_ssim: float = 1.0, worst: float = 0.5, ssim_global: float = 0.5, init_weights: str | None = None,
           max_steps: int | None = None) -> Path:
-    if input_mode not in INPUT_MODES:
-        raise ValueError(f"input_mode must be one of {INPUT_MODES}")
-    if min(minutes, lr, pool_size, val_per_kind, base) <= 0:
-        raise ValueError("minutes, lr, pool_size, val_per_kind, base must be positive")
     output, weights = Path(output), Path(weights)
     output.mkdir(parents=True, exist_ok=True)
     weights.parent.mkdir(parents=True, exist_ok=True)
@@ -185,12 +77,12 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         raise RuntimeError("Remove the STOP file before starting a new run")
     started = time.monotonic()
     deadline = started + minutes * 60
-    train_deadline = max(started, deadline - min(120, minutes * 6))  # запас на финальный отчёт
+    train_deadline = max(started, deadline - min(120, minutes * 6))
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
     if dev.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested but unavailable; refusing a silent CPU fallback")
+        raise RuntimeError("CUDA requested but unavailable")
     if dev.type == "cuda" and dev.index is None:
         dev = torch.device("cuda", torch.cuda.current_device())
     torch.manual_seed(seed)
@@ -220,11 +112,9 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
                 raise ValueError(f"Resume setting mismatch: {key}")
         net.load_state_dict(checkpoint["net"])
         best, step = float(checkpoint["best_score"]), int(checkpoint["step"])
-    elif init_weights:  # дообучение (v2) от готовых весов с новым lr/лоссом
+    elif init_weights:
         ckpt = torch.load(init_weights, map_location=dev, weights_only=True)
-        if ckpt.get("model") != model_cfg or ckpt.get("physics_version") != PHYSICS_VERSION:
-            raise ValueError("init weights have a different model/physics config")
-        net.load_state_dict(ckpt["net"])
+        net.load_state_dict(ckpt["net"], strict=False)
         print(f"[init] weights from {init_weights}", flush=True)
 
     state = dict(pid=os.getpid(), status="preparing", device=str(dev),
@@ -245,22 +135,24 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         sampler = QuadSampler(images, cats, seed=seed + step)
         val = {k: torch.from_numpy(v.astype(np.float32) / 255.0)
                for k, v in fixed_quads("val", val_per_kind).items()}
-        actual_batch = choose_batch(net, prop, sampler, dev, str(batch),
-                                    min(train_deadline, time.monotonic() + 90), loss_kwargs)
+        
+        # Автоподбор батча
+        if batch == "auto":
+            actual_batch = 16
+            print(f"[batch] using default {actual_batch}", flush=True)
+        else:
+            actual_batch = int(batch)
+            
         opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-5)
-        scaler = torch.amp.GradScaler("cuda", enabled=dev.type == "cuda")
-        if checkpoint:
-            opt.load_state_dict(checkpoint["optimizer"])
-            scaler.load_state_dict(checkpoint["scaler"])
-            torch.set_rng_state(checkpoint["torch_rng"].cpu())
+        
         atomic_json(output / "config.json", dict(**metadata, batch=actual_batch, lr=lr, minutes=minutes,
                                                  torch_version=str(torch.__version__),
-                                                 cuda_version=torch.version.cuda, amp=dev.type == "cuda",
+                                                 cuda_version=torch.version.cuda, amp=False,
                                                  resume=resume, init_weights=init_weights))
 
         def save_last():
             atomic_save(output / "last.pt", dict(**metadata, net=net.state_dict(), optimizer=opt.state_dict(),
-                                                 scaler=scaler.state_dict(), best_score=best, step=step,
+                                                 best_score=best, step=step,
                                                  torch_rng=torch.get_rng_state()))
 
         def validate_and_save(train_loss=None, train_diag=None):
@@ -268,7 +160,7 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
             metrics = evaluate(net, prop, val, actual_batch, dev, loss_kwargs)
             if not math.isfinite(metrics["loss"]):
                 raise RuntimeError("Non-finite validation; last valid checkpoint preserved")
-            score = metrics["pcc"] + metrics["ssim"]  # критерий выбора лучших весов
+            score = metrics["pcc"] + metrics["ssim"]
             if score > best:
                 best = score
                 atomic_save(weights, dict(**metadata, net=net.state_dict(), best_score=best, step=step,
@@ -291,6 +183,7 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         last_eval = time.monotonic()
         losses, diags = [], []
         stop_reason = "time_limit"
+        
         while time.monotonic() < train_deadline:
             if max_steps is not None and step >= max_steps:
                 stop_reason = "max_steps"
@@ -304,33 +197,48 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
             rate = lr * warmup * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * frac)))
             for group in opt.param_groups:
                 group["lr"] = rate
+                
             x = torch.from_numpy(sampler.sample(actual_batch)).to(dev, non_blocking=True)
             opt.zero_grad(set_to_none=True)
+            
             loss, diag = compute_loss(net, prop, x, dev, loss_kwargs)
             loss = loss.mean()
+            
             if not torch.isfinite(loss):
-                raise RuntimeError("Non-finite training loss; last valid checkpoint preserved")
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
+                print(f"[warn] NaN loss at step {step}, skipping batch", flush=True)
+                opt.zero_grad(set_to_none=True)
+                step += 1
+                continue
+                
+            loss.backward()
+            if step % 100 == 0:
+                g = net.unet.head.weight.grad
+                print(f"[grad] head: {g.norm().item() if g is not None else 'None'}", flush=True)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 10.0)  # clip=10.0
+            opt.step()
             step += 1
             losses.append(float(loss.detach()))
             diags.append(diag)
+            
             if time.monotonic() - last_eval >= eval_every:
                 mean_diag = {k: round(float(np.mean([d[k] for d in diags])), 5) for k in diags[0]}
                 validate_and_save(float(np.mean(losses)), mean_diag)
                 losses.clear()
                 diags.clear()
                 last_eval = time.monotonic()
+                
         mean_diag = {k: round(float(np.mean([d[k] for d in diags])), 5) for k in diags[0]} if diags else None
         validate_and_save(float(np.mean(losses)) if losses else None, mean_diag)
         net.load_state_dict(torch.load(weights, map_location=dev, weights_only=True)["net"])
         status(status="evaluating", stop_reason=stop_reason)
-        report = final_report(net, output, metadata, dev, deadline + 600)
-        status(status="completed", stop_reason=stop_reason, weights=str(weights),
-               test_summary=[{k: r[k] for k in ("set", "label", "pcc", "ssim", "time_ms")} for r in report["test"]])
+        
+        from .pipeline import run, save_preview
+        from .data import classic_testsets
+        sets = classic_testsets()
+        res = run(sets["photos_classic"], "net", model=net, device=str(dev))
+        save_preview(res, output / "preview.png")
+        
+        status(status="completed", stop_reason=stop_reason, weights=str(weights))
         print(f"[done] best weights: {weights}", flush=True)
     except BaseException as error:
         status(status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed", error=str(error))
@@ -340,27 +248,25 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
             ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
     return weights
 
-
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--device", default="cuda", help="cuda | cpu | auto")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--device", default="cuda")
     ap.add_argument("--minutes", type=float, default=120)
-    ap.add_argument("--base", type=int, default=32, help="ширина U-Net (32–48 для 6 ГБ)")
+    ap.add_argument("--base", type=int, default=32)
     ap.add_argument("--input-mode", choices=INPUT_MODES, default="imgphase")
-    ap.add_argument("--unroll", type=int, default=0, help="число развёрнутых стадий GS+CNN после U-Net")
+    ap.add_argument("--unroll", type=int, default=0)
     ap.add_argument("--stage-base", type=int, default=16)
-    ap.add_argument("--batch", default="auto")
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--batch", default="16")
+    ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--pool-size", type=int, default=20000)
     ap.add_argument("--val-per-kind", type=int, default=16)
-    ap.add_argument("--eval-every", type=float, default=120.0, help="секунд между валидациями")
+    ap.add_argument("--eval-every", type=float, default=120.0)
     ap.add_argument("--w-mse", type=float, default=1.0)
     ap.add_argument("--w-pcc", type=float, default=1.0)
     ap.add_argument("--w-ssim", type=float, default=1.0)
-    ap.add_argument("--worst", type=float, default=0.5, help="вес худшей плоскости (0..1)")
-    ap.add_argument("--ssim-global", type=float, default=0.5,
-                    help="доля глобального ИСС (слайд 3) в SSIM-члене лосса; 0 — только локальный SSIM")
-    ap.add_argument("--init-weights", default=None, help="дообучение от готовых весов")
+    ap.add_argument("--worst", type=float, default=0.5)
+    ap.add_argument("--ssim-global", type=float, default=0.5)
+    ap.add_argument("--init-weights", default=None)
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output", default=str(ROOT / "data" / "training"))
@@ -373,7 +279,6 @@ def main(argv: list[str] | None = None) -> None:
           resume=a.resume, seed=a.seed, eval_every=a.eval_every, w_mse=a.w_mse, w_pcc=a.w_pcc,
           w_ssim=a.w_ssim, worst=a.worst, ssim_global=a.ssim_global, init_weights=a.init_weights,
           max_steps=a.max_steps)
-
 
 if __name__ == "__main__":
     main()
