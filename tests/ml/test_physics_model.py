@@ -117,4 +117,4 @@ def test_invalid_shapes_and_unknown_architectures_fail_early():
     with pytest.raises(ValueError, match="Unknown architecture"):
         build_model({"architecture": "typo"})
     with pytest.raises(ValueError, match="model_version"):
-        build_model({"architecture": "physics-unrolled", "model_version": 2})
+        build_model({"architecture": "physics-unrolled", "model_version": 99})

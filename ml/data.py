@@ -20,6 +20,8 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 import zipfile
@@ -201,7 +203,92 @@ def random_crop(img: np.ndarray, rng: np.random.Generator, size: int = SIZE) -> 
     return np.ascontiguousarray(out)
 
 
-def load_photo_sources(photo_dir: Path | None = None, max_files: int = 2000) -> list[np.ndarray]:
+PHOTO_SPLITS = ("train", "val", "test")
+PHOTO_SPLIT_VERSION = "content-sha256-80-10-10-v1"
+
+
+def _photo_digest(image: np.ndarray) -> str:
+    image = np.ascontiguousarray(image, dtype=np.uint8)
+    digest = hashlib.sha256()
+    digest.update(str(image.shape).encode("ascii"))
+    digest.update(image.tobytes())
+    return digest.hexdigest()
+
+
+def _source_split(digest: str) -> str:
+    bucket = int(digest[:16], 16) % 10
+    return "val" if bucket == 0 else "test" if bucket == 1 else "train"
+
+
+def _resize_photo(image: np.ndarray) -> np.ndarray:
+    im = Image.fromarray(np.asarray(image, dtype=np.uint8))
+    if max(im.size) > 768:
+        im.thumbnail((768, 768), Image.LANCZOS)
+    return np.ascontiguousarray(im, dtype=np.uint8)
+
+
+def _partitioned_photo_sources(photo_dir: Path | None = None, max_files: int = 2000):
+    """Decode and group sources by content, including duplicate external files.
+
+    Classic evaluation images remain reserved even if a copy was placed in the
+    external directory. The split never depends on a file's path or directory.
+    """
+    photo_dir = Path(photo_dir or DATA_DIR / "photos")
+    reserved = {_photo_digest(_resize_photo(im)) for name in TEST_PHOTOS
+                if (im := load_skimage(name)) is not None}
+    records = []
+    seen = set(reserved)
+
+    def add(identifier, image):
+        image = _resize_photo(image)
+        digest = _photo_digest(image)
+        if digest in seen:
+            return
+        seen.add(digest)
+        record = dict(id=identifier, sha256=digest, split=_source_split(digest),
+                      height=int(image.shape[0]), width=int(image.shape[1]))
+        records.append((record, image))
+
+    for name in TRAIN_PHOTOS:
+        image = load_skimage(name)
+        if image is not None and min(image.shape) >= 64:
+            add(f"skimage:{name}", image)
+    if photo_dir.is_dir():
+        files = sorted(f for f in photo_dir.rglob("*")
+                       if f.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"})
+        for path in files[:max_files]:
+            try:
+                with Image.open(path) as im:
+                    # Use the same grayscale conversion as built-in sources,
+                    # so an RGB copy of a reserved photo is recognized too.
+                    native = im if im.mode in ("L", "RGB", "RGBA") else im.convert("RGB")
+                    image = _to_gray_u8(np.asarray(native))
+                add(f"external:{path.relative_to(photo_dir).as_posix()}", image)
+            except Exception as exc:
+                print(f"[data] skip {path}: {exc}", file=sys.stderr)
+    return records
+
+
+def photo_source_manifest(photo_dir: Path | None = None, max_files: int = 2000) -> list[dict]:
+    """Portable source IDs, decoded content hashes and disjoint split assignment."""
+    return [record for record, _ in _partitioned_photo_sources(photo_dir, max_files)]
+
+
+def photo_manifest_hash(manifest: list[dict]) -> str:
+    payload = dict(version=PHOTO_SPLIT_VERSION, sources=manifest)
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def load_photo_sources(photo_dir: Path | None = None, max_files: int = 2000,
+                       photo_split: str | None = None) -> list[np.ndarray]:
+    if photo_split is not None:
+        if photo_split not in PHOTO_SPLITS:
+            raise ValueError(f"photo_split must be one of {PHOTO_SPLITS}")
+        photos = [image for record, image in _partitioned_photo_sources(photo_dir, max_files)
+                  if record["split"] == photo_split]
+        if not photos:
+            raise ValueError(f"No photo sources in {photo_split!r} split; add more photographs")
+        return photos
     photos = [p for p in (load_skimage(n) for n in TRAIN_PHOTOS) if p is not None and min(p.shape) >= 64]
     photo_dir = photo_dir or DATA_DIR / "photos"
     if photo_dir.is_dir():
@@ -236,14 +323,19 @@ def generate(category: str, rng: np.random.Generator, photos: list[np.ndarray]) 
 
 
 def build_pool(count: int, seed: int = 0, photo_dir: Path | None = None,
-               verbose: bool = True) -> tuple[np.ndarray, np.ndarray]:
+               verbose: bool = True, photo_split: str | None = None,
+               image_store: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    if count < 1:
+        raise ValueError("count must be positive")
     rng = np.random.default_rng(seed)
-    photos = load_photo_sources(photo_dir)
+    photos = load_photo_sources(photo_dir, photo_split=photo_split)
     if verbose:
         print(f"[data] fonts: {len(find_fonts())}, photo sources: {len(photos)}", flush=True)
     probs = np.array([POOL_MIX[c] for c in CATEGORIES])
     cats = rng.choice(len(CATEGORIES), size=count, p=probs / probs.sum()).astype(np.uint8)
-    images = np.empty((count, SIZE, SIZE), dtype=np.uint8)
+    images = image_store if image_store is not None else np.empty((count, SIZE, SIZE), dtype=np.uint8)
+    if images.shape != (count, SIZE, SIZE) or images.dtype != np.uint8:
+        raise ValueError("image_store must have shape (count, SIZE, SIZE) and dtype uint8")
     for i in range(count):
         images[i] = generate(CATEGORIES[cats[i]], rng, photos)
         if verbose and (i + 1) % 5000 == 0:
@@ -252,13 +344,47 @@ def build_pool(count: int, seed: int = 0, photo_dir: Path | None = None,
 
 
 def load_or_build_pool(count: int, seed: int = 0, cache_dir: Path | None = None,
-                       photo_dir: Path | None = None) -> tuple[np.ndarray, np.ndarray]:
+                       photo_dir: Path | None = None, photo_split: str | None = None,
+                       mmap: bool = False) -> tuple[np.ndarray, np.ndarray]:
     cache_dir = Path(cache_dir or DATA_DIR / "pool")
-    cache = cache_dir / f"pool_{count}_seed{seed}.npz"
+    if count < 1:
+        raise ValueError("count must be positive")
+    manifest = photo_source_manifest(photo_dir) if photo_split is not None else None
+    fingerprint = photo_manifest_hash(manifest) if manifest is not None else "legacy"
+    suffix = f"_{photo_split}_{fingerprint[:16]}" if photo_split is not None else ""
+    stem = f"pool_{count}_seed{seed}{suffix}"
+    if mmap:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        images_path, cats_path, meta_path = [cache_dir / f"{stem}.{kind}"
+                                             for kind in ("images.npy", "cats.npy", "json")]
+        expected = dict(count=count, seed=seed, size=SIZE, photo_split=photo_split,
+                        source_fingerprint=fingerprint)
+        if images_path.is_file() and cats_path.is_file() and meta_path.is_file():
+            if json.loads(meta_path.read_text(encoding="utf-8")) == expected:
+                images = np.load(images_path, mmap_mode="r", allow_pickle=False)
+                cats = np.load(cats_path, mmap_mode="r", allow_pickle=False)
+                if images.shape == (count, SIZE, SIZE) and cats.shape == (count,):
+                    return images, cats
+        image_tmp, cats_tmp = images_path.with_suffix(".tmp.npy"), cats_path.with_suffix(".tmp.npy")
+        store = np.lib.format.open_memmap(image_tmp, mode="w+", dtype=np.uint8,
+                                          shape=(count, SIZE, SIZE))
+        images, cats = build_pool(count, seed, photo_dir, photo_split=photo_split, image_store=store)
+        store.flush()
+        del images, store
+        with cats_tmp.open("wb") as stream:
+            np.save(stream, cats, allow_pickle=False)
+        os.replace(image_tmp, images_path)
+        os.replace(cats_tmp, cats_path)
+        meta_tmp = meta_path.with_suffix(".tmp")
+        meta_tmp.write_text(json.dumps(expected, sort_keys=True), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
+        return (np.load(images_path, mmap_mode="r", allow_pickle=False),
+                np.load(cats_path, mmap_mode="r", allow_pickle=False))
+    cache = cache_dir / f"{stem}.npz"
     if cache.is_file():
         with np.load(cache) as z:
             return z["images"], z["cats"]
-    images, cats = build_pool(count, seed, photo_dir)
+    images, cats = build_pool(count, seed, photo_dir, photo_split=photo_split)
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp = cache.with_name(cache.stem + ".tmp.npz")
     np.savez_compressed(tmp, images=images, cats=cats)
@@ -301,15 +427,18 @@ SPLIT_SEEDS = {"val": 1_000_003, "test": 2_000_003}
 FIXED_KINDS = ("letters", "photos", "mixed")
 
 
-def fixed_quads(split: str, per_kind: int = 16, photo_dir: Path | None = None) -> dict[str, np.ndarray]:
+def fixed_quads(split: str, per_kind: int = 16, photo_dir: Path | None = None,
+                 photo_split: str | None = None) -> dict[str, np.ndarray]:
     """Детерминированные четвёрки {kind: (K, 4, N, N) uint8} для val/test.
 
-    Фото для val/test берутся случайными кропами из тех же источников, что и обучение,
-    но с другим seed; для честной проверки на «невиданных» фото см. наборы
-    data/testsets/photos_classic (эти изображения в обучение не входят).
+    При photo_split=None сохраняется прежний режим: новые кропы общих источников.
+    При photo_split=split используются полностью отдельные источники фотографий.
+    data/testsets/photos_classic всегда зарезервирован отдельно.
     """
+    if per_kind < 1:
+        raise ValueError("per_kind must be positive")
     rng = np.random.default_rng(SPLIT_SEEDS[split])
-    photos = load_photo_sources(photo_dir)
+    photos = load_photo_sources(photo_dir, photo_split=photo_split)
     out = {}
     for kind in FIXED_KINDS:
         quads = np.empty((per_kind, 4, SIZE, SIZE), dtype=np.uint8)
@@ -417,7 +546,7 @@ def fetch_div2k(dest: Path | None = None, url: str = DIV2K_URL) -> Path:
     with zipfile.ZipFile(archive) as z:
         for member in z.namelist():
             target = (dest / member).resolve()
-            if not str(target).startswith(str(dest.resolve())):
+            if not target.is_relative_to(dest.resolve()):
                 raise RuntimeError(f"unsafe path in archive: {member}")
         z.extractall(dest)
     print(f"[data] photos ready in {dest}; rebuild the pool to use them", flush=True)
@@ -431,6 +560,8 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--count", type=int, default=20000)
     b.add_argument("--seed", type=int, default=0)
     b.add_argument("--photo-dir", type=Path, default=None)
+    b.add_argument("--photo-split", choices=PHOTO_SPLITS, default=None)
+    b.add_argument("--mmap", action="store_true", help="cache image arrays as memory-mapped NPY")
     t = sub.add_parser("make-testsets")
     t.add_argument("--out", type=Path, default=None)
     sub.add_parser("fetch-div2k")
@@ -438,7 +569,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--out", type=Path, default=DATA_DIR / "pool_preview.png")
     args = ap.parse_args(argv)
     if args.cmd == "build-pool":
-        images, cats = load_or_build_pool(args.count, args.seed, photo_dir=args.photo_dir)
+        images, cats = load_or_build_pool(args.count, args.seed, photo_dir=args.photo_dir,
+                                          photo_split=args.photo_split, mmap=args.mmap)
         counts = {c: int((cats == i).sum()) for i, c in enumerate(CATEGORIES)}
         print(f"[data] pool {images.shape}, categories {counts}")
     elif args.cmd == "make-testsets":
