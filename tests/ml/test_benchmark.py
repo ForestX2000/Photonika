@@ -176,3 +176,56 @@ def test_hybrid_profile_budgets_are_recorded_without_random_classical_start(monk
 def test_invalid_budgets_fail_before_loading_data(tmp_path, kwargs):
     with pytest.raises(ValueError):
         benchmark([tmp_path / "missing.pt"], device="cpu", **kwargs)
+
+
+def test_interrupted_measurements_resume_per_case_and_changed_weights_invalidate_cache(monkeypatch, tmp_path):
+    import ml.model
+    import ml.pipeline
+    import tools.benchmark_models as tool
+
+    path = tmp_path / "weights.pt"
+    path.write_bytes(b"first weights")
+    monkeypatch.setattr(tool, "fixed_quads", lambda *a:
+                        {"photos": np.zeros((3, 4, 8, 8), dtype=np.uint8)})
+    metadata = {"optics": DEFAULT_OPTICS.as_dict(), "model": {"architecture": "fixture"}}
+    monkeypatch.setattr(ml.model, "load_model", lambda *a: (object(), metadata))
+    calls = []
+    fail = True
+
+    def run(source, method, **kwargs):
+        calls.append(method)
+        if fail and len(calls) == 3:
+            raise InterruptedError("test interruption after one saved measurement")
+        return SimpleNamespace(rows=[{"pcc": .3, "ssim": .2}] * 4, time_ms=2.)
+
+    monkeypatch.setattr(ml.pipeline, "run", run)
+    options = dict(device="cpu", count=3, gs_iters=1, refine_steps=0,
+                   classic=False, cache_dir=tmp_path / "cache")
+    with pytest.raises(InterruptedError):
+        benchmark([path], **options)
+    fail = False
+    report = benchmark([path], **options)
+    assert calls.count("gs") == 6  # First warmup + two calls; resumed warmup + two remaining.
+    assert calls.count("net") == 4
+    assert all(v["summary"]["runs"] == 3 for v in report["variants"])
+    calls.clear()
+    assert benchmark([path], **options) == report
+    assert calls == []  # A completed method needs no warmup or repeated measurements.
+    path.write_bytes(b"changed weights")
+    benchmark([path], **options)
+    assert calls == ["net"] * 4  # Classical results survive; neural results cannot be reused.
+
+
+def test_evaluation_stop_and_expired_deadline_do_not_start_a_case(monkeypatch, tmp_path):
+    import time
+    import tools.benchmark_models as tool
+
+    path = tmp_path / "weights.pt"
+    path.write_bytes(b"fixture")
+    monkeypatch.setattr(tool, "fixed_quads", lambda *a: pytest.fail("data loaded after stop"))
+    stop = tmp_path / "STOP"
+    stop.touch()
+    with pytest.raises(InterruptedError, match="Stop requested"):
+        benchmark([path], device="cpu", stop_file=stop)
+    with pytest.raises(TimeoutError, match="budget"):
+        benchmark([path], device="cpu", deadline=time.monotonic() - 1)

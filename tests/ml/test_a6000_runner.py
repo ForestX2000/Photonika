@@ -110,6 +110,36 @@ def test_selects_on_validation_then_tests_once_and_resumes_without_retraining(tm
     assert calls["pool"] == [100000]
 
 
+def test_evaluation_thread_override_keeps_existing_resume_identity(tmp_path, monkeypatch):
+    import torch
+
+    calls = fake_backend(monkeypatch)
+    original = a6000.run_benchmark
+
+    def interrupted(paths, *, device, parameters):
+        if parameters["split"] == "test":
+            raise InterruptedError("stopped final evaluation")
+        return original(paths, device=device, parameters=parameters)
+
+    monkeypatch.setattr(a6000, "run_benchmark", interrupted)
+    options = dict(minutes=30, device="cpu", precision="fp32", skip_fetch=True,
+                   output=tmp_path / "run", weights=tmp_path / "export.pt")
+    with pytest.raises(InterruptedError):
+        a6000.run(**options, eval_threads=3)
+
+    def resumed(paths, *, device, parameters):
+        assert torch.get_num_threads() == 2
+        assert parameters["cache_dir"] == options["output"] / "benchmark_cache" / "test"
+        assert parameters["stop_file"] == options["output"] / "STOP"
+        assert parameters["deadline"] > 0
+        return original(paths, device=device, parameters=parameters)
+
+    monkeypatch.setattr(a6000, "run_benchmark", resumed)
+    result = a6000.run(**options, resume=True, eval_threads=2)
+    assert result["status"] == "completed"
+    assert len(calls["train"]) == 4
+
+
 def test_main_training_is_not_assumed_better_than_pilot(tmp_path, monkeypatch):
     fake_backend(monkeypatch, main_score=0.1)
     result = a6000.run(minutes=30, device="cpu", precision="fp32", skip_fetch=True,

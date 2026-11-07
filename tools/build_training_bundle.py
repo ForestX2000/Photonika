@@ -33,6 +33,7 @@ REQUIRED_FILES = (
     "ml/__init__.py", "ml/model.py", "ml/physics_model.py", "ml/training.py",
     "ml/data.py", "ml/fresnel.py", "ml/losses.py", "ml/config.py",
     "tools/a6000.py", "tools/benchmark_models.py", "tools/verify_submission.py",
+    "tools/evaluation_runtime.py",
     "tools/synthesize_a6000.py",
     "tools/build_training_bundle.py", ENTRYPOINT,
 )

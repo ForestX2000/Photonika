@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.evaluation_runtime import announce, monitor
+
 CANDIDATES = (
     {"name": "efficient_b32_u4", "base": 32, "unroll": 4, "stage_base": 16},
     {"name": "quality_b48_u8", "base": 48, "unroll": 8, "stage_base": 24},
@@ -310,9 +312,9 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         pool_size: int = 100000, grad_accum: int = 1, max_steps: int | None = None,
         pilot_count: int = 4, test_count: int = 16, threads: int = 12,
         vram_limit_gib: float = 40.0, pool_in_ram: bool = True,
-        allow_small_dataset: bool = False) -> dict:
-    if threads < 1:
-        raise ValueError("threads must be positive")
+        allow_small_dataset: bool = False, eval_threads: int = 2) -> dict:
+    if threads < 1 or eval_threads < 1:
+        raise ValueError("threads and eval_threads must be positive")
     plan = make_plan(minutes, precision=precision, pool_size=pool_size, grad_accum=grad_accum,
                      max_steps=max_steps, pilot_count=pilot_count, test_count=test_count, threads=threads,
                      vram_limit_gib=vram_limit_gib, pool_in_ram=pool_in_ram)
@@ -330,6 +332,8 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
                 "pilot_validation": plan["pilot_validation"], "final_test": plan["final_test"],
                 "selection_validation": plan["selection_validation"],
                 "allow_small_dataset": allow_small_dataset}
+    announce(f"[resume] checking saved experiment: {manifest_path}" if resume else
+             f"[prepare] new experiment: {manifest_path}")
     if resume:
         if not manifest_path.is_file():
             raise RuntimeError("No manifest exists; start a new run without --resume")
@@ -358,12 +362,14 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
                     "invocations": [], "plan": plan}
     output.mkdir(parents=True, exist_ok=True)
     storage = check_storage(output, pool_size)
+    announce("[prepare] checking CUDA and available storage")
     hardware = preflight(device, precision)
     device = hardware["device"]
     import torch
 
     torch.set_num_threads(threads)
-    manifest["invocations"].append({"started_at": stamp(), "minutes": minutes, "hardware": hardware, "storage": storage})
+    manifest["invocations"].append({"started_at": stamp(), "minutes": minutes, "hardware": hardware,
+                                    "storage": storage, "eval_threads": eval_threads})
 
     def save(**updates):
         manifest.update(updates, updated_at=stamp(), invocation_elapsed_seconds=round(time.monotonic() - started, 2))
@@ -374,6 +380,16 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
             raise InterruptedError(f"Stop requested by {stop}; continue with --resume after removing it")
         if time.monotonic() >= deadline:
             raise TimeoutError("Invocation budget exhausted; continue with --resume")
+
+    def evaluate(paths, parameters, name):
+        # Small single-quad FFT/optimization runs benefit from few host threads;
+        # child training processes retain their independent 12-thread setting.
+        torch.set_num_threads(eval_threads)
+        announce(f"[evaluate] {name}; CPU threads={eval_threads}; "
+                 f"completed cases cached under {output / 'benchmark_cache' / name}")
+        runtime = dict(cache_dir=output / "benchmark_cache" / name,
+                       stop_file=stop, deadline=deadline)
+        return run_benchmark(paths, device=device, parameters={**parameters, **runtime})
 
     def training_config(candidate: dict, run_dir: Path, checkpoint: Path, budget: float) -> dict:
         config = dict(plan["common_training"], **{k: candidate[k] for k in ("base", "unroll", "stage_base")},
@@ -393,7 +409,9 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
             if not skip_fetch:
                 from ml.data import fetch_div2k
                 fetch_div2k()
+        announce("[prepare] checking photo sources and split hashes (CPU / disk)")
         data = dataset_info()
+        announce(f"[prepare] photo sources: {data['counts']}")
         check_dataset(data, allow_small_dataset)
         if manifest.get("data") and manifest["data"]["sha256"] != data["sha256"]:
             raise ValueError("Photo sources changed since the run started; use a new --output and --weights")
@@ -432,7 +450,7 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
                 config = training_config(candidate, run_dir, checkpoint, budget)
                 run_training(config, run_dir / "training.log", stop, deadline)
                 require_time()
-                report = run_benchmark([checkpoint], device=device, parameters=plan["pilot_validation"])
+                report = evaluate([checkpoint], plan["pilot_validation"], name)
                 report_path = run_dir / "validation_quantized.json"
                 atomic_json(report_path, report)
                 score = checkpoint_scores(report)[str(checkpoint.resolve())]
@@ -474,7 +492,7 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         if not manifest.get("export"):
             require_time()
             paths = [checked_artifact(r) for r in valid] + [checked_artifact(final)]
-            report = run_benchmark(paths, device=device, parameters=plan["selection_validation"])
+            report = evaluate(paths, plan["selection_validation"], "selection")
             atomic_json(output / "selection_validation.json", report)
             variant = select_neural_variant(report)
             selected = Path(variant["checkpoint"]["path"]).resolve()
@@ -503,7 +521,8 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         save(status="test-evaluation")
         selected_profile = manifest["export"]["neural_profile"]
         final_parameters = dict(plan["final_test"], neural_profiles=[selected_profile])
-        report = run_benchmark([weights], device=device, parameters=final_parameters)
+        announce("[evaluate] final test; saved weights and inference policy are frozen; no retraining")
+        report = evaluate([weights], final_parameters, "test")
         report_path = output / "test_benchmark.json"
         atomic_json(report_path, report)
         comparison = quality_comparison(report, selected_profile["method"])
@@ -535,6 +554,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--pilot-count", type=int, default=4)
     parser.add_argument("--test-count", type=int, default=16)
     parser.add_argument("--threads", type=int, default=min(12, os.cpu_count() or 1))
+    parser.add_argument("--eval-threads", type=int, default=2,
+                        help="CPU threads for evaluation only; leaves training/resume settings unchanged")
     parser.add_argument("--vram-limit-gib", type=float, default=40.0)
     parser.add_argument("--pool-in-ram", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--train-config", type=Path, help=argparse.SUPPRESS)
@@ -544,7 +565,11 @@ def main(argv: list[str] | None = None) -> None:
         train(**json.loads(args.train_config.read_text(encoding="utf-8")))
         return
     try:
-        result = run(**{k: v for k, v in vars(args).items() if k != "train_config"})
+        if args.dry_run:
+            result = run(**{k: v for k, v in vars(args).items() if k != "train_config"})
+        else:
+            with monitor():
+                result = run(**{k: v for k, v in vars(args).items() if k != "train_config"})
     except (ValueError, RuntimeError, FileExistsError, TimeoutError, InterruptedError) as exc:
         parser.exit(1, f"a6000: {exc}\n")
     if args.dry_run:

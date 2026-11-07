@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 from ml.config import DEFAULT_OPTICS, PHYSICS_VERSION
 from ml.data import SPLIT_SEEDS, classic_testsets, fixed_quads
 from ml.metrics import DEFAULT_NORM
+from tools.evaluation_runtime import announce, monitor
 
 NEURAL_METHODS = ("net", "net+gs", "net+adam", "net+gs+adam")
 
@@ -88,7 +89,9 @@ def summarize(records: list[dict]) -> dict:
 def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
               count: int = 4, seeds: tuple[int, ...] = (0,), gs_iters: int = 50,
               refine_steps: int = 10, classic: bool = True, adam_steps: int = 0,
-              photo_split: str = "legacy", neural_profiles: list[dict] | None = None) -> dict:
+              photo_split: str = "legacy", neural_profiles: list[dict] | None = None,
+              cache_dir: Path | str | None = None, stop_file: Path | str | None = None,
+              deadline: float | None = None) -> dict:
     """Benchmark identical quads for every method; exclude one warmup per method."""
     import torch
 
@@ -118,15 +121,25 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+    def check_stop():
+        if stop_file is not None and Path(stop_file).exists():
+            raise InterruptedError(f"Stop requested by {stop_file}; benchmark progress is cached")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Evaluation budget exhausted; continue with --resume to reuse cached results")
+
+    check_stop()
+    announce(f"[benchmark] preparing {split} inputs; photo_split={photo_split}")
     if photo_split == "source":
         quads = fixed_quads(split, count, photo_split=split)
         from ml.data import photo_source_manifest, photo_manifest_hash, PHOTO_SPLIT_VERSION
+        announce("[benchmark] checking photograph content hashes")
         manifest = photo_source_manifest()
         source_metadata = dict(version=PHOTO_SPLIT_VERSION, hash=photo_manifest_hash(manifest), sources=manifest)
     else:
         quads = fixed_quads(split, count)
         source_metadata = None
     generated_count = sum(len(batch) for batch in quads.values())
+    announce(f"[benchmark] preparing classic examples: {classic}")
     classic_sets = classic_testsets() if classic else {}
     # Prefix classic names so generated categories and reserved-source examples
     # remain separately inspectable, even when their subjects overlap.
@@ -166,22 +179,69 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
         },
         "variants": [],
     }
+    report["protocol"]["cpu_threads"] = torch.get_num_threads()
+    # Reuse only identical algorithms, inputs, weights, seeds and timing environment.
+    # This never substitutes cached runs for another seed or benchmark protocol.
+    code = hashlib.sha256(Path(__file__).read_bytes())
+    for source in sorted((ROOT / "ml").glob("*.py")):
+        code.update(source.name.encode())
+        code.update(source.read_bytes())
+    cache_context = {k: v for k, v in report.items() if k != "variants"}
+    cache_context["code_sha256"] = code.hexdigest()
+    tasks = [(kind, index, quad, seed) for kind, index, quad in cases for seed in seeds]
+    announce(f"[benchmark] {len(cases)} four-plane inputs x {len(seeds)} seeds; "
+             f"{len(tasks)} measured runs per method; CPU threads={torch.get_num_threads()}")
 
     def measure(label: str, method: str, model=None, checkpoint=None, **params):
+        check_stop()
         kwargs = dict(device=device, prop=prop, model=model, **params)
-        run(cases[0][2], method, norm=DEFAULT_NORM, seed=seeds[0], **kwargs)
         records = []
-        for kind, index, quad in cases:
-            for seed in seeds:
-                started = time.perf_counter()
-                result = run(quad, method, norm=DEFAULT_NORM, seed=seed, **kwargs)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                records.append({
+        identity = dict(context=cache_context, method=method, params=params,
+                        checkpoint=None if checkpoint is None else
+                        {k: v for k, v in checkpoint.items() if k != "path"})
+        cache_path = None
+        if cache_dir is not None:
+            key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            cache_path = Path(cache_dir) / f"{key}.json"
+            if cache_path.is_file():
+                saved = json.loads(cache_path.read_text(encoding="utf-8"))
+                records = saved["records"]
+                if saved.get("identity") != identity or len(records) > len(tasks):
+                    raise ValueError(f"Invalid benchmark cache: {cache_path}")
+                for record, (kind, index, _, seed) in zip(records, tasks):
+                    if (record["kind"], record["quad_index"], record["seed"]) != (kind, index, seed):
+                        raise ValueError(f"Benchmark cache task mismatch: {cache_path}")
+                if records:
+                    summarize(records)  # Validate the record structure before reuse.
+        announce(f"[benchmark] {label}: {len(records)}/{len(tasks)} cached")
+        if len(records) < len(tasks):
+            announce(f"[benchmark] {label}: warming up (excluded from measurements)")
+            run(cases[0][2], method, norm=DEFAULT_NORM, seed=seeds[0], **kwargs)
+        measured_start, initial_count = time.monotonic(), len(records)
+        next_progress = measured_start
+        for kind, index, quad, seed in tasks[len(records):]:
+            check_stop()
+            started = time.perf_counter()
+            result = run(quad, method, norm=DEFAULT_NORM, seed=seed, **kwargs)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            records.append({
                     "kind": kind, "quad_index": index, "seed": seed,
                     "population": "classic" if kind.startswith("classic/") else "generated",
                     "planes": result.rows, "synthesis_time_ms": result.time_ms,
                     "pipeline_time_ms": elapsed_ms,
-                })
+            })
+            if cache_path is not None:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache_path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(dict(identity=identity, records=records),
+                                                allow_nan=False), encoding="utf-8")
+                os.replace(temporary, cache_path)
+            now = time.monotonic()
+            if now >= next_progress or len(records) == len(tasks):
+                remaining = (now - measured_start) / (len(records) - initial_count) * (len(tasks) - len(records))
+                announce(f"[benchmark] {label}: {len(records)}/{len(tasks)}; "
+                         f"last={elapsed_ms / 1000:.2f}s; method ETA={remaining / 60:.1f} min")
+                next_progress = now + 5
         entry = {
             "label": label, "method": method, "params": params,
             "summary": summarize(records),
@@ -194,6 +254,8 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
         if checkpoint is not None:
             entry["checkpoint"] = checkpoint
         report["variants"].append(entry)
+        announce(f"[benchmark] done {label}: PCC={entry['summary']['pcc']:.4f} "
+                 f"SSIM={entry['summary']['ssim']:.4f}")
         return entry
 
     measure(f"gs-{gs_iters}", "gs", gs_iters=gs_iters)
@@ -201,6 +263,8 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
         measure(f"gs-{gs_iters}+adam-{adam_steps}", "gs+adam",
                 gs_iters=gs_iters, adam_steps=adam_steps)
     for path in paths:
+        check_stop()
+        announce(f"[benchmark] loading weights: {path}")
         net, ckpt = load_model(path, device)
         if ckpt["optics"] != DEFAULT_OPTICS.as_dict():
             # Check normalized values rather than relying on JSON list/tuple forms.
@@ -241,16 +305,18 @@ def main(argv: list[str] | None = None) -> None:
                         help="include supplementary classic sets with reserved photograph/text sources")
     parser.add_argument("--threads", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--out", type=Path, default=ROOT / "results" / "benchmark.json")
+    parser.add_argument("--cache-dir", type=Path, help="save each completed run for interruption recovery")
     args = parser.parse_args(argv)
     if args.threads < 1:
         parser.error("--threads must be positive")
     import torch
 
     torch.set_num_threads(args.threads)
-    report = benchmark(args.weights, device=args.device, split=args.split, count=args.count,
-                       seeds=tuple(args.seeds), gs_iters=args.gs_iters,
-                       refine_steps=args.refine_steps, classic=args.classic, adam_steps=args.adam_steps,
-                       photo_split=args.photo_split)
+    with monitor():
+        report = benchmark(args.weights, device=args.device, split=args.split, count=args.count,
+                           seeds=tuple(args.seeds), gs_iters=args.gs_iters,
+                           refine_steps=args.refine_steps, classic=args.classic, adam_steps=args.adam_steps,
+                           photo_split=args.photo_split, cache_dir=args.cache_dir)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
                         encoding="utf-8")

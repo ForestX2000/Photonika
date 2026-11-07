@@ -22,7 +22,7 @@ def source_tree(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative == builder.ENTRYPOINT:
             path.write_bytes(b"#!/usr/bin/env bash\r\npython3 tools/a6000.py --dry-run\r\n")
-        elif relative == "tools/a6000.py":
+        elif relative in ("tools/a6000.py", "tools/evaluation_runtime.py"):
             path.write_bytes((ROOT / relative).read_bytes())
         elif relative == "ml/physics_model.py":
             path.write_text("class PhysicsUnrolledNetV2: pass\n", encoding="utf-8")
