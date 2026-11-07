@@ -20,15 +20,15 @@ python -m venv .venv
 # .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-.\.venv\Scripts\python.exe -m app.cli info            # параметры физики, CUDA, наличие весов
+.\.venv\Scripts\python.exe -m ml.cli info            # параметры физики, CUDA, наличие весов
 .\.venv\Scripts\python.exe -m pytest -q               # тесты физики, метрик, методов, UI
 ```
 
 Синтез в формате сдачи (i-е изображение восстанавливается на i-м расстоянии):
 
 ```powershell
-python -m app.cli synth --inputs 1.png 2.png 3.png 4.png --out results/run1
-python -m app.cli synth --inputs ... --out results/run1 --method gs+adam   # без нейросети
+python -m ml.cli synth --inputs 1.png 2.png 3.png 4.png --out results/run1
+python -m ml.cli synth --inputs ... --out results/run1 --method gs+adam   # без нейросети
 ```
 
 Метод по умолчанию: `net+gs`, если есть веса `data/weights/doe_multiplane.pt`, иначе `gs+adam`.
@@ -46,7 +46,7 @@ python -m app.cli synth --inputs ... --out results/run1 --method gs+adam   # б�
 Проверка готового результата:
 
 ```powershell
-python -m app.cli verify --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png
+python -m ml.cli verify --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png
 python tools/verify_submission.py --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png --recon results/run1/recon_1.png results/run1/recon_2.png results/run1/recon_3.png results/run1/recon_4.png
 ```
 
@@ -64,7 +64,7 @@ $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathr
 Внешние множители не влияют на модуль, поэтому `|K_i| = |FFT(exp(jφ) · Q_i)|`, где
 `Q_i = exp(jπ(u²+v²)/(λ z_i))`. Координаты `(u, v)` отсчитываются от центра ДОЭ с шагом 10 мкм,
 результат центрируется `fftshift`, FFT нормирован как `ortho` (энергия сохраняется).
-Реализация: `app/fresnel.py` (numpy — эталон для сдачи, torch — дифференцируемая версия).
+Реализация: `ml/fresnel.py` (numpy — эталон для сдачи, torch — дифференцируемая версия).
 
 * **Критическое расстояние** `N·Δx²/λ = 24,06 мм`. Все расстояния из условия чуть больше него, поэтому
   квадратичная фаза дискретизирована без алиасинга и формула с одним FFT корректна.
@@ -92,7 +92,7 @@ $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathr
   * `raw` — только 4 изображения (контроль для A/B).
   * `--unroll K` — после U-Net ещё K стадий «шаг GS (4 FFT) + маленькая U-Net-поправка». При
     инициализации это ровно GS-K; время инференса фиксировано (никаких итераций до сходимости).
-* **Функция потерь** (`app/losses.py`) для каждой плоскости:
+* **Функция потерь** (`ml/losses.py`) для каждой плоскости:
   `MSE(s·|K|, A)/mean(A²) + (1 − PCC) + (1 − SSIM*)`, `s` — оптимальный масштаб (MSE оценивает
   форму, а не яркость), `SSIM*` — смесь локального SSIM и ИСС со слайда 3 по изображениям,
   нормированным на максимум (как у жюри, см. выше). Дифференцируемые SSIM совпадают с skimage
@@ -105,7 +105,7 @@ $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathr
 
 ## Данные
 
-`app/data.py`, пул 20 000 изображений 128×128 (кэшируется в `data/pool/`):
+`ml/data.py`, пул 20 000 изображений 128×128 (кэшируется в `data/pool/`):
 символы из TTF-шрифтов (кириллица, латиница, цифры; 17 шрифтов Windows или DejaVu/Liberation в
 Docker) — 25 %, геометрические фигуры — 15 %, фото — 40 %, 1/f-текстуры — 20 % (организаторы:
 «изображения могут быть разнообразные, но не совсем простые» — упор на фото). Четвёрки
@@ -114,14 +114,14 @@ Docker) — 25 %, геометрические фигуры — 15 %, фото �
 и, если есть, папка `data/photos/`:
 
 ```powershell
-python -m app.data fetch-div2k          # DIV2K valid HR, 100 фото, ≈450 МБ → data/photos/div2k
-python -m app.data build-pool --count 20000
-python -m app.data preview              # data/pool_preview.png
+python -m ml.data fetch-div2k          # DIV2K valid HR, 100 фото, ≈450 МБ → data/photos/div2k
+python -m ml.data build-pool --count 20000
+python -m ml.data preview              # data/pool_preview.png
 ```
 
 После добавления фото удалите `data/pool/` или смените `--pool-size`, чтобы пул пересобрался.
 
-Тестовые наборы (`data/testsets/`, `python -m app.cli make-testsets`) в обучение не входят:
+Тестовые наборы (`data/testsets/`, `python -m ml.cli make-testsets`) в обучение не входят:
 `photos_classic` (camera, astronaut, coins, moon), `text_binary` (text, page, horse, фигуры),
 `mephi_letters` («МИФИ»), `digits` («2026»), `random_*` — случайные четвёрки с test-seed.
 Фиксированные val-четвёрки (буквы / фото / смешанные) генерируются по отдельному seed.
@@ -132,7 +132,7 @@ python -m app.data preview              # data/pool_preview.png
 # фаза 1: A/B-прогоны (4 × 20 мин): backprop / imgphase, без unroll и с unroll 4
 .\scripts\ab-test.ps1
 .\scripts\ab-test.ps1 -Minutes 15 -Only ab_backprop_b32,ab_imgphase_b32   # часть вариантов
-python -m app.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
+python -m ml.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
 
 # фаза 2: ночной прогон выбранного варианта в фоне (окно можно закрыть)
 .\scripts\train-local.ps1 -Minutes 480 -InputMode imgphase -Base 32   # вариант, выбранный по A/B
@@ -144,7 +144,7 @@ python -m app.compare_runs "data/runs/ab_*"          # таблица + data/run
 .\scripts\train-local.ps1 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2 -RunName training_v2 -WeightsName doe_multiplane_v2.pt
 ```
 
-Напрямую: `python -m app.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
+Напрямую: `python -m ml.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
 по val PCC + SSIM), `data/training/{last.pt, metrics.jsonl, status.json, config.json,
 final_report.json, preview.png, training.log}`. Возобновление проверяет совпадение версии
 физики и конфигурации сети. Финальный отчёт сравнивает сеть, сеть+20 и GS-50 на test-наборах
@@ -156,7 +156,7 @@ final_report.json, preview.png, training.log}`. Возобновление пр�
 ## Бенчмарк «качество / время»
 
 ```powershell
-python -m app.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters --device cuda
+python -m ml.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters --device cuda
 ```
 
 Время — медиана 3 запусков после прогрева, с синхронизацией CUDA. Результат: `results/bench/bench.md`,
