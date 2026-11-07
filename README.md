@@ -128,6 +128,18 @@ python -m ml.data preview              # data/pool_preview.png
 
 ## Обучение
 
+Новая модель по умолчанию — **`physics-unrolled`**: U-Net с глобальным attention,
+дифференцируемая оптика и обучаемые стадии GS. Выбор архитектуры сохраняется в весах;
+исходная сеть доступна через `--architecture unet`, комплексная — через `--architecture pdr`.
+Команды обучения, совместимость старых весов и benchmark после квантования ДОЭ:
+[описание новой модели](docs/physics-unrolled.md).
+
+```powershell
+.venv\Scripts\python.exe -m ml.training --architecture physics-unrolled --base 16 --unroll 4 --stage-base 8 --batch 4 --lr 1e-4 --minutes 120 --output data/runs/physics_b16_u4 --weights data/weights/physics_unrolled.pt
+```
+
+Ниже — прежние сценарии A/B. Для их воспроизведения указывайте архитектуру `unet`.
+
 ```powershell
 # фаза 1: A/B-прогоны (4 × 20 мин): backprop / imgphase, без unroll и с unroll 4
 .\scripts\ab-test.ps1
@@ -135,13 +147,13 @@ python -m ml.data preview              # data/pool_preview.png
 python -m ml.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
 
 # фаза 2: ночной прогон выбранного варианта в фоне (окно можно закрыть)
-.\scripts\train-local.ps1 -Minutes 480 -InputMode imgphase -Base 32   # вариант, выбранный по A/B
+.\scripts\train-local.ps1 -Architecture unet -Unroll 0 -Minutes 480 -InputMode imgphase -Base 32   # вариант, выбранный по A/B
 .\scripts\training-status.ps1                        # статус, val PCC/SSIM по категориям
 .\scripts\stop-training.ps1                          # мягкая остановка с сохранением
-.\scripts\train-local.ps1 -Resume -Minutes 120       # продолжить
+.\scripts\train-local.ps1 -Architecture unet -Unroll 0 -Resume -Minutes 120       # продолжить
 
 # фаза 3: дообучение v2 (меньше lr, больше вес SSIM)
-.\scripts\train-local.ps1 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2 -RunName training_v2 -WeightsName doe_multiplane_v2.pt
+.\scripts\train-local.ps1 -Architecture unet -Unroll 0 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2 -RunName training_v2 -WeightsName doe_multiplane_v2.pt
 ```
 
 Напрямую: `python -m ml.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
