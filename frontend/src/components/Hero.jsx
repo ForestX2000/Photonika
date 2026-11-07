@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DEFAULT_DISTANCES, HERO_PCC } from "../lib/constants";
 import { fmt, zLabel } from "../lib/format";
 import { prefersReducedMotion } from "../lib/hooks";
@@ -28,6 +28,18 @@ export default function Hero() {
   const choose = (i) => {
     setCurrent(i);
     setCycle((c) => c + 1);
+  };
+
+  // Свайп по сцене на телефоне: влево — следующий кадр, вправо — предыдущий
+  const touchX = useRef(null);
+  const onTouchStart = (e) => {
+    touchX.current = e.touches[0].clientX;
+  };
+  const onTouchEnd = (e) => {
+    if (touchX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchX.current;
+    touchX.current = null;
+    if (Math.abs(dx) > 40) choose((current + (dx < 0 ? 1 : STEPS - 1)) % STEPS);
   };
 
   return (
@@ -60,14 +72,20 @@ export default function Hero() {
           </div>
         </div>
 
-        <div className="scene" id="scene" aria-label="Схема: ДОЭ и четыре плоскости восстановления">
+        <div
+          className="scene"
+          id="scene"
+          aria-label="Схема: ДОЭ и четыре плоскости восстановления"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
           <div className="beam" aria-hidden="true" />
-          <figure className={`plate plate-doe${current === 0 ? " active" : ""}`} data-plane={0}>
+          <figure className={`plate plate-doe${current === 0 ? " active" : ""}`} data-plane={0} data-pos={0 - current}>
             <img src="/images/doe_phase.png" alt="Фаза синтезированного ДОЭ" width="128" height="128" />
             <figcaption>ДОЭ · фаза</figcaption>
           </figure>
           {PLANES.map((n, i) => (
-            <figure key={n} className={`plate${current === n ? " active" : ""}`} data-plane={n}>
+            <figure key={n} className={`plate${current === n ? " active" : ""}`} data-plane={n} data-pos={n - current}>
               <img src={`/images/plane_${n}.png`} alt={`Плоскость ${n}`} width="128" height="128" />
               <figcaption>{zLabel(DEFAULT_DISTANCES[i])}</figcaption>
             </figure>
