@@ -199,6 +199,11 @@ button { font: inherit; color: inherit; }
   transform: translateX(var(--x)) rotateY(-24deg) translateZ(60px);
 }
 .plate.active figcaption { color: var(--laser); }
+.plate-doe.active {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(233, 196, 106, .4), 0 0 60px -6px rgba(233, 196, 106, .5), 0 30px 60px -20px rgba(0, 0, 0, .8);
+}
+.plate-doe.active figcaption { color: var(--gold); }
 
 .focus-card {
   position: absolute; z-index: 10; left: 0; bottom: 6px; width: 250px;
@@ -237,7 +242,7 @@ button { font: inherit; color: inherit; }
 .fact a { font: 600 13px/1 var(--display); letter-spacing: .08em; text-transform: uppercase; }
 .fact a:hover { color: var(--laser); }
 .fact-progress { grid-column: 1 / -1; height: 1px; background: var(--line-strong); border-radius: 2px; overflow: hidden; }
-.fact-progress span { display: block; width: 25%; height: 2px; background: linear-gradient(90deg, var(--gold), #ff8a3d); transition: transform .6s cubic-bezier(.2, .8, .2, 1); }
+.fact-progress span { display: block; width: 20%; height: 2px; background: linear-gradient(90deg, var(--gold), #ff8a3d); transition: transform .6s cubic-bezier(.2, .8, .2, 1); }
 
 /* ---------- Секции ---------- */
 section[id] { scroll-margin-top: 90px; }
@@ -565,8 +570,8 @@ table.metrics { width: 100%; border-collapse: collapse; font-size: 14px; font-va
   .doe-card .doe-img { grid-row: auto; }
   .scene { --plate: 104px; --step: 52px; height: 210px; width: 330px; }
   .plate figcaption { font-size: 10px; bottom: -26px; opacity: 0; transition: opacity .3s; }
-  .plate.active figcaption, .plate-doe figcaption { opacity: 1; }
-  .scene:has(.plate.active[data-plane="1"]) .plate-doe figcaption { opacity: 0; }
+  .plate.active figcaption { opacity: 1; }
+  .plate { left: 18px; } /* место слева для выдвинутой карточки ДОЭ */
   .testsets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .testset { flex-direction: column; align-items: flex-start; }
   .numbers-inner { grid-template-columns: 1fr 1fr; gap: 22px; }
