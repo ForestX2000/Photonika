@@ -159,7 +159,9 @@ button { font: inherit; color: inherit; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 14px; }
 
 /* 3D-сцена: ДОЭ и четыре плоскости */
-.scene { --plate: 172px; --step: 86px; position: relative; height: 470px; perspective: 1400px; transform-style: preserve-3d; }
+/* Без preserve-3d: карточки повёрнуты вокруг своих центров и в общем 3D-пространстве пересекались бы
+   (край ДОЭ «прорезал» активную плоскость). Порядок слоёв задаём z-index. */
+.scene { --plate: 172px; --step: 86px; position: relative; height: 470px; perspective: 1400px; }
 .beam {
   position: absolute; top: 50%; left: -8%; right: -6%; height: 6px; margin-top: -3px; border-radius: 6px;
   background: linear-gradient(90deg, transparent, rgba(92, 255, 143, .9) 12%, rgba(92, 255, 143, .5) 60%, transparent);
@@ -186,20 +188,20 @@ button { font: inherit; color: inherit; }
   position: absolute; left: 50%; bottom: -34px; transform: translateX(-50%);
   font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--muted); white-space: nowrap;
 }
-.plate-doe { opacity: 1; border-color: rgba(233, 196, 106, .45); }
-.plate[data-plane="1"] { --n: 1.25; }
-.plate[data-plane="2"] { --n: 2.25; }
-.plate[data-plane="3"] { --n: 3.25; }
-.plate[data-plane="4"] { --n: 4.25; }
+.plate-doe { opacity: 1; border-color: rgba(233, 196, 106, .45); z-index: 5; }
+.plate[data-plane="1"] { --n: 1.25; z-index: 4; }
+.plate[data-plane="2"] { --n: 2.25; z-index: 3; }
+.plate[data-plane="3"] { --n: 3.25; z-index: 2; }
+.plate[data-plane="4"] { --n: 4.25; z-index: 1; }
 .plate.active {
-  opacity: 1; border-color: var(--laser);
+  z-index: 6; opacity: 1; border-color: var(--laser);
   box-shadow: 0 0 0 1px rgba(92, 255, 143, .4), 0 0 60px -6px rgba(92, 255, 143, .55), 0 30px 60px -20px rgba(0, 0, 0, .8);
   transform: translateX(var(--x)) rotateY(-24deg) translateZ(60px);
 }
 .plate.active figcaption { color: var(--laser); }
 
 .focus-card {
-  position: absolute; z-index: 5; left: 0; bottom: 6px; width: 250px;
+  position: absolute; z-index: 10; left: 0; bottom: 6px; width: 250px;
   display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: center;
   padding: 14px 16px; border-radius: var(--r);
 }
@@ -212,7 +214,7 @@ button { font: inherit; color: inherit; }
 .focus-bar span.run { animation: fill 2.6s linear forwards; }
 @keyframes fill { to { width: 100%; } }
 .hero-badge {
-  position: absolute; z-index: 5; right: 8%; top: 18px; display: flex; align-items: center; gap: 8px;
+  position: absolute; z-index: 10; right: 8%; top: 18px; display: flex; align-items: center; gap: 8px;
   padding: 10px 16px; border-radius: var(--pill); font-size: 12.5px; color: var(--muted);
 }
 .hero-badge b { font: 600 22px/1 var(--display); color: var(--gold); }
@@ -564,7 +566,7 @@ table.metrics { width: 100%; border-collapse: collapse; font-size: 14px; font-va
   .scene { --plate: 104px; --step: 52px; height: 210px; width: 330px; }
   .plate figcaption { font-size: 10px; bottom: -26px; opacity: 0; transition: opacity .3s; }
   .plate.active figcaption, .plate-doe figcaption { opacity: 1; }
-  .plate.active[data-plane="1"] ~ .plate-doe figcaption { opacity: 0; }
+  .scene:has(.plate.active[data-plane="1"]) .plate-doe figcaption { opacity: 0; }
   .testsets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .testset { flex-direction: column; align-items: flex-start; }
   .numbers-inner { grid-template-columns: 1fr 1fr; gap: 22px; }
