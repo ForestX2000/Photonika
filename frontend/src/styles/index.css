@@ -1,0 +1,56 @@
+/*
+ * Стили сайта.
+ *
+ * Tailwind CSS v4 подключён БЕЗ preflight (базового сброса стилей браузера): так сайт выглядит
+ * точно так же, как до переезда на React. Подключены слой темы и утилиты.
+ *
+ * Где что:
+ *   components.css — все текущие стили компонентов (тёмная тема, скругления, 3D-сцена, анимации),
+ *                    лежат в слое `components`, поэтому утилиты Tailwind могут их переопределять;
+ *   @theme ниже     — токены дизайна для утилит: bg-surface, text-laser, text-gold, rounded-card,
+ *                    font-display и т. д. Значения берутся из тех же CSS-переменных (:root).
+ */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./components.css" layer(components);
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-gold: var(--gold);
+  --color-gold-2: var(--gold-2);
+  --color-gold-ink: var(--gold-ink);
+  --color-laser: var(--laser);
+  --color-laser-soft: var(--laser-soft);
+  --color-danger: var(--danger);
+
+  --font-display: var(--display);
+  --font-body: var(--body);
+
+  --radius-card: var(--r-xl);
+  --radius-card-lg: var(--r-lg);
+  --radius-card-md: var(--r);
+  --radius-card-sm: var(--r-sm);
+  --radius-pill: var(--pill);
+
+  --shadow-card: var(--shadow);
+}
+
+/*
+ * В Tailwind есть своя утилита `container` (с брейкпоинтами) — она перебила бы наш класс .container.
+ * Переопределяем её так же, как в components.css: ширина до 1200px с отступом 16px по краям.
+ */
+@utility container {
+  width: min(var(--container), 100% - 32px);
+  max-width: none;
+  margin-inline: auto;
+}

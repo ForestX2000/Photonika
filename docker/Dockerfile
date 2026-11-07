@@ -1,6 +1,17 @@
 # Photonika: синтез фазового ДОЭ под 4 изображения.
-# Python 3.12. По умолчанию — CUDA-колёса PyTorch (cu128, драйвер NVIDIA 535+);
+#
+# Этап 1 — сборка фронтенда (React + Vite + Tailwind) → /web/dist.
+# Этап 2 — Python 3.12: бэкенд (FastAPI) раздаёт API и собранный фронтенд.
+# По умолчанию — CUDA-колёса PyTorch (cu128, драйвер NVIDIA 535+);
 # для CPU-образа: docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu ...
+
+FROM node:22-alpine AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
@@ -23,10 +34,11 @@ RUN pip install --no-cache-dir --upgrade "pip>=25.2" && \
 RUN pip install --no-cache-dir --timeout 600 --retries 10 -r requirements.txt
 
 COPY . .
+COPY --from=web /web/dist ./frontend/dist
 RUN python -m ml.cli make-testsets > /dev/null
 
-VOLUME /ml/data/weights
-VOLUME /ml/results
+VOLUME /app/data/weights
+VOLUME /app/results
 EXPOSE 8000 8501
 
 # Сайт: API + фронтенд (Streamlit-демо — сервис streamlit в docker-compose.yml)
