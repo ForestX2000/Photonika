@@ -14,7 +14,7 @@ const FACTS = [
   { href: "#numbers", body: <>Качество — <b>PCC и SSIM</b> по амплитудам, каждое изображение нормировано на 1.</> },
 ];
 
-/** Первый экран: заголовок, 3D-сцена «ДОЭ → 4 плоскости», нумерация 00–04, факты. */
+/** Первый экран: заголовок, 3D-сцена «ДОЭ → 4 плоскости», нумерация 01–05, факты. */
 export default function Hero() {
   const [current, setCurrent] = useState(0);
   const [cycle, setCycle] = useState(0); // перезапуск автопереключения после клика
@@ -102,7 +102,7 @@ export default function Hero() {
           {[0, ...PLANES].map((n) => (
             <li key={n} data-plane={n} className={current === n ? "active" : undefined}>
               <button type="button" onClick={() => choose(n)} aria-label={n === 0 ? "ДОЭ" : `Плоскость ${n}`}>
-                0{n}
+                0{n + 1}
               </button>
             </li>
           ))}
