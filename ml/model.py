@@ -1,176 +1,59 @@
-"""PDRNet: Phase Dual-Resolution Network с комплексными свёртками.
-Основано на исследованиях 2025: dual-resolution + complex-valued convolutions дают SSIM 0.93+.
+"""Model dispatch and strict, architecture-aware checkpoint loading.
+
+The original U-Net remains available as MultiPlaneUNet. New training uses the
+physics-unrolled family; checkpoints select their own architecture explicitly.
 """
 from __future__ import annotations
-import math
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from .baselines import normalize_amplitude
-from .config import DEFAULT_OPTICS, NUM_PLANES, Optics
-from .fresnel import FresnelSingleFFT
+from torch import nn
 
-INPUT_MODES = ("raw", "backprop", "imgphase")
+from .config import DEFAULT_OPTICS, PHYSICS_VERSION, Optics
+from .legacy_model import INPUT_MODES, MultiPlaneUNet as LegacyUNet
 
-def _groups(ch: int) -> int:
-    for g in (8, 4, 2, 1):
-        if ch % g == 0: return g
-    return 1
+ARCHITECTURES = ("unet", "pdr", "physics-unrolled")
 
-class ComplexConvBlock(nn.Module):
-    def __init__(self, c_in: int, c_out: int):
-        super().__init__()
-        self.conv_real = nn.Conv2d(c_in, c_out, 3, padding=1, padding_mode="circular", bias=False)
-        self.conv_imag = nn.Conv2d(c_in, c_out, 3, padding=1, padding_mode="circular", bias=False)
-        self.gn = nn.GroupNorm(_groups(c_out), c_out)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        real, imag = x.real, x.imag
-        out_real = self.conv_real(real) - self.conv_imag(imag)
-        out_imag = self.conv_real(imag) + self.conv_imag(real)
-        out = torch.complex(out_real, out_imag)
-        
-        mag = torch.abs(out)
-        mag = self.gn(mag).clamp_min(1e-3)  # Защита от деления на ноль
-        out = out / mag
-        
-        return torch.complex(F.silu(out.real), F.silu(out.imag))
-
-class ComplexUNetBranch(nn.Module):
-    """Одна ветка U-Net (используется для high-res и low-res)."""
-    def __init__(self, c_in: int, base: int, levels: int = 4):
-        super().__init__()
-        widths = [base * min(2 ** i, 8) for i in range(levels + 1)]
-        self.enc = nn.ModuleList([ComplexConvBlock(c_in, widths[0])] +
-                                 [ComplexConvBlock(widths[i], widths[i + 1]) for i in range(levels)])
-        self.dec = nn.ModuleList([ComplexConvBlock(widths[i + 1] + widths[i], widths[i]) for i in reversed(range(levels))])
-        self.out_ch = widths[0]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        skips = []
-        for i, block in enumerate(self.enc):
-            if i > 0:
-                x = torch.complex(F.max_pool2d(x.real, 2), F.max_pool2d(x.imag, 2))
-            x = block(x)
-            skips.append(x)
-        x = skips.pop()
-        for block in self.dec:
-            skip = skips.pop()
-            x = torch.complex(
-                F.interpolate(x.real, size=skip.shape[-2:], mode="bilinear", align_corners=False),
-                F.interpolate(x.imag, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-            )
-            x = block(torch.cat([x, skip], dim=1))
-        return x
-
-class PDRNet(nn.Module):
-    """Phase Dual-Resolution Network: две ветки (128 и 64) + слияние."""
-    def __init__(self, c_in: int, base: int = 32, levels: int = 4, gain: float = 10.0):
-        super().__init__()
-        # Ветка 1: полное разрешение
-        self.branch_high = ComplexUNetBranch(c_in, base, levels)
-        # Ветка 2: низкое разрешение (base//2)
-        self.branch_low = ComplexUNetBranch(c_in, base // 2, levels)
-        
-        ch_high = self.branch_high.out_ch
-        ch_low = self.branch_low.out_ch
-        
-        # Слияние: high (ch_high) + low (ch_low) -> conv -> out (ch_high)
-        self.fuse = nn.Conv2d(ch_high * 2 + ch_low * 2, ch_high * 2, 1)
-        self.head = nn.Conv2d(ch_high * 2, 2, 1)
-        self.gain = gain
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Ветка 1: полное разрешение
-        out_high = self.branch_high(x)  # (B, C, H, W) complex
-        
-        # Ветка 2: downsampled (H/2, W/2)
-        x_low = torch.complex(F.avg_pool2d(x.real, 2), F.avg_pool2d(x.imag, 2))
-        out_low = self.branch_low(x_low)  # (B, C_low, H/2, W/2) complex
-        
-        # Upsample low до full
-        out_low_up = torch.complex(
-            F.interpolate(out_low.real, size=out_high.shape[-2:], mode="bilinear", align_corners=False),
-            F.interpolate(out_low.imag, size=out_high.shape[-2:], mode="bilinear", align_corners=False)
-        )
-        
-        # Слияние: (high.real, high.imag, low.real, low.imag) -> fuse -> (real, imag)
-        fused = self.fuse(torch.cat([out_high.real, out_high.imag, out_low_up.real, out_low_up.imag], dim=1))
-        ab = self.head(fused) * self.gain
-        return torch.complex(1.0 + ab[:, 0], ab[:, 1])
-
-class PhysicsFeatures(nn.Module):
-    def __init__(self, prop: FresnelSingleFFT, mode: str = "backprop", seed: int = 1234):
-        super().__init__()
-        self.prop, self.mode = prop, mode
-        p, n = prop.num_planes, prop.optics.size
-        gen = torch.Generator().manual_seed(seed)
-        psi = torch.rand((p, n, n), generator=gen) * 2 * math.pi
-        self.register_buffer("psi", torch.polar(torch.ones_like(psi), psi), persistent=False)
-
-    @property
-    def channels(self) -> int:
-        p = self.prop.num_planes
-        return {"raw": p, "backprop": p + p + 1, "imgphase": p + p}[self.mode]
-
-    def forward(self, amps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = amps.float() * 2.0 - 1.0
-        if self.mode == "raw":
-            return torch.complex(x, torch.zeros_like(x)), torch.zeros_like(x[:, 0])
-        if self.mode == "imgphase":
-            psi = self.psi.expand(x.shape[0], -1, -1, -1)
-            return torch.complex(x, psi.real), None
-        
-        amp = normalize_amplitude(amps)
-        back = self.prop.back(amp * self.psi)  # (B, P, N, N) complex
-        s = back.sum(1)                        # (B, N, N) complex
-        # Защита от sgn(0) = 0
-        s_safe = torch.where(torch.abs(s) < 1e-6, torch.ones_like(s) * 1e-6, s)
-        unit = torch.sgn(s_safe)               # (B, N, N) complex
-        
-        feats = torch.cat([torch.complex(x, torch.zeros_like(x)), back, unit.unsqueeze(1)], dim=1)
-        return feats, torch.angle(s)
-
-def rotate(a, b, phase):
-    c, s = torch.cos(phase), torch.sin(phase)
-    return torch.atan2(a * s + b * c, a * c - b * s)
-
-class MultiPlaneUNet(nn.Module):
-    def __init__(self, base: int = 32, input_mode: str = "backprop", optics: Optics = DEFAULT_OPTICS,
-                 num_planes: int = NUM_PLANES, unroll: int = 0, stage_base: int = 16):
-        super().__init__()
-        self.base, self.input_mode, self.unroll, self.stage_base = base, input_mode, unroll, stage_base
-        prop = FresnelSingleFFT(optics)
-        self.features = PhysicsFeatures(prop, input_mode)
-        self.prop = prop
-        # PDRNet вместо обычного U-Net
-        self.unet = PDRNet(self.features.channels, base, levels=4)
-
-    def forward(self, amps: torch.Tensor) -> torch.Tensor:
-        x, base_phase = self.features(amps)
-        ab = self.unet(x)  # (B, N, N) complex
-        amp = normalize_amplitude(amps)
-        if self.input_mode == "imgphase":
-            psi = rotate(ab.real, ab.imag, torch.angle(self.features.psi))
-            phase = torch.angle(self.prop.back(amp * torch.polar(torch.ones_like(psi), psi)).sum(1))
-        else:
-            phase = rotate(ab.real, ab.imag, base_phase)
-        return phase
+class MultiPlaneUNet(LegacyUNet):
+    """Original real-valued U-Net, with unchanged parameter names and shapes."""
 
     def config(self) -> dict:
-        return {"base": self.base, "input_mode": self.input_mode, "unroll": self.unroll,
-                "stage_base": self.stage_base, "complex": True, "pdr": True}
+        return {"architecture": "unet", **super().config()}
 
-def build_model(config: dict, optics: Optics = DEFAULT_OPTICS) -> MultiPlaneUNet:
-    return MultiPlaneUNet(base=int(config["base"]), input_mode=config["input_mode"], optics=optics,
-                          unroll=int(config.get("unroll", 0)), stage_base=int(config.get("stage_base", 16)))
 
-def load_model(path, device="cpu"):
-    from .config import PHYSICS_VERSION
+def build_model(config: dict, optics: Optics = DEFAULT_OPTICS) -> nn.Module:
+    architecture = config.get("architecture")
+    if architecture is None:
+        architecture = "pdr" if config.get("pdr") or config.get("complex") else "unet"
+    kwargs = dict(base=int(config.get("base", 32)), input_mode=config.get("input_mode", "imgphase"),
+                  optics=optics, num_planes=len(optics.distances),
+                  unroll=int(config.get("unroll", 4 if architecture == "physics-unrolled" else 0)),
+                  stage_base=int(config.get("stage_base", 16)))
+    if architecture == "unet":
+        return MultiPlaneUNet(**kwargs)
+    if architecture == "pdr":
+        from .pdr_model import MultiPlaneUNet as PDRNet
+        return PDRNet(**kwargs)
+    if architecture == "physics-unrolled":
+        from .physics_model import PhysicsUnrolledNet
+        if config.get("model_version", 1) != 1:
+            raise ValueError("Unsupported physics-unrolled model_version")
+        return PhysicsUnrolledNet(**kwargs)
+    raise ValueError(f"Unknown architecture {architecture!r}; expected one of {ARCHITECTURES}")
+
+
+def load_model(path, device="cpu") -> tuple[nn.Module, dict]:
+    """Load old and new checkpoints strictly; never accept partial random weights."""
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     if ckpt.get("physics_version") != PHYSICS_VERSION:
-        raise ValueError("checkpoint physics mismatch")
-    optics = Optics(**{k: (tuple(v) if k == "distances" else v) for k, v in ckpt["optics"].items()})
-    model = build_model(ckpt["model"], optics)
-    model.load_state_dict(ckpt["net"], strict=False)
+        raise ValueError(f"checkpoint physics {ckpt.get('physics_version')!r} != {PHYSICS_VERSION!r}")
+    optics = Optics(**{k: tuple(v) if k == "distances" else v for k, v in ckpt["optics"].items()})
+    config = dict(ckpt["model"])
+    if "architecture" not in config:
+        # An older trainer omitted the PDR flags even for complex checkpoints.
+        if any(k.startswith("unet.branch_high.") for k in ckpt["net"]):
+            config["architecture"] = "pdr"
+    model = build_model(config, optics)
+    model.load_state_dict(ckpt["net"], strict=True)
+    ckpt = {**ckpt, "model": model.config()}
     return model.to(device).eval(), ckpt

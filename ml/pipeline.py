@@ -92,6 +92,11 @@ def synthesize_phase(sources_u8: np.ndarray, method: str = "gs+adam", *, model=N
     if method.startswith("net") and model is None:
         raise ValueError("method 'net' needs trained weights (--weights)")
     prop = prop or FresnelSingleFFT(optics).to(device)
+    if method.startswith("net"):
+        if prop.optics != optics:
+            raise ValueError("propagator optics do not match requested reconstruction optics")
+        if model.prop.optics != prop.optics or model.prop.distances != prop.distances:
+            raise ValueError("network checkpoint optics do not match reconstruction optics")
     target = torch.from_numpy(sources_u8.astype(np.float32) / 255.0)[None].to(device)
     params: dict = {"seed": seed}
     _sync(device)

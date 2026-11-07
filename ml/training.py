@@ -1,13 +1,13 @@
 """Ограниченное по времени возобновляемое обучение сети «4 изображения → фаза ДОЭ»."""
 from __future__ import annotations
 import argparse
+import copy
 import ctypes
 import json
 import math
 import os
 import random
 import time
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from .config import DEFAULT_OPTICS, PHYSICS_VERSION
 from .data import FIXED_KINDS, QuadSampler, fixed_quads, load_or_build_pool
 from .fresnel import FresnelSingleFFT
 from .losses import multiplane_loss, plane_metrics
-from .model import INPUT_MODES, MultiPlaneUNet
+from .model import ARCHITECTURES, INPUT_MODES, build_model, load_model
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,17 +38,21 @@ def sync(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 def compute_loss(net, prop, x, device, loss_kwargs):
-    phase = net(x)  # БЕЗ AMP!
+    # Complex-valued propagation and phase arithmetic stay in float32.
+    phase = net(x)
     return multiplane_loss(prop(phase.float()), x, **loss_kwargs)
 
+@torch.inference_mode()
 def evaluate(net, prop, val: dict[str, torch.Tensor], batch: int, device: torch.device, loss_kwargs) -> dict:
+    if batch < 1 or not val or any(len(q) == 0 for q in val.values()):
+        raise ValueError("validation requires nonempty sets and a positive batch")
     net.eval()
     out = {}
     for kind, quads in val.items():
         losses, pccs, ssims = [], [], []
         for start in range(0, len(quads), batch):
             x = quads[start:start + batch].to(device)
-            phase = net(x)  # БЕЗ AMP!
+            phase = net(x)
             mod = prop(phase.float())
             loss, _ = multiplane_loss(mod, x, **loss_kwargs)
             p, s = plane_metrics(mod, x)
@@ -58,18 +62,114 @@ def evaluate(net, prop, val: dict[str, torch.Tensor], batch: int, device: torch.
         p, s = torch.cat(pccs), torch.cat(ssims)
         out[kind] = {"loss": float(torch.cat(losses).mean()), "pcc": float(p.mean()), "ssim": float(s.mean()),
                      "pcc_planes": [round(float(v), 4) for v in p.mean(0)]}
-    out["loss"] = float(np.mean([v["loss"] for v in out.values()]))
-    out["pcc"] = float(np.mean([out[k]["pcc"] for k in val]))
-    out["ssim"] = float(np.mean([out[k]["ssim"] for k in val]))
+    count = sum(len(q) for q in val.values())
+    for metric in ("loss", "pcc", "ssim"):
+        out[metric] = sum(out[k][metric] * len(val[k]) for k in val) / count
     return out
 
+def capture_rng(sampler: QuadSampler, device: torch.device) -> dict:
+    numpy_state = np.random.get_state()
+    state = {"torch_rng": torch.get_rng_state(), "python_rng": random.getstate(),
+             "numpy_rng": (numpy_state[0], torch.from_numpy(numpy_state[1].astype(np.int64)),
+                           *numpy_state[2:]),
+             "sampler_rng": copy.deepcopy(sampler.rng.bit_generator.state)}
+    if device.type == "cuda":
+        state["cuda_rng"] = torch.cuda.get_rng_state(device)
+    return state
+
+
+def restore_rng(state: dict, sampler: QuadSampler, device: torch.device) -> None:
+    if "torch_rng" in state:
+        torch.set_rng_state(state["torch_rng"].cpu())
+    if "python_rng" in state:
+        random.setstate(state["python_rng"])
+    if "numpy_rng" in state:
+        name, keys, position, has_gauss, cached = state["numpy_rng"]
+        np.random.set_state((name, keys.cpu().numpy().astype(np.uint32), position, has_gauss, cached))
+    if "sampler_rng" in state:
+        sampler.rng.bit_generator.state = state["sampler_rng"]
+    if device.type == "cuda" and "cuda_rng" in state:
+        torch.cuda.set_rng_state(state["cuda_rng"].cpu(), device)
+
+
+def choose_batch(net, prop, sampler, device, requested, limit, loss_kwargs) -> int:
+    """Probe a full optimizer step without changing weights or the sample stream."""
+    if requested != "auto":
+        value = int(requested)
+        if value < 1:
+            raise ValueError("batch must be positive")
+        return value
+    if device.type != "cuda":
+        return 2
+    original = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+    rng = capture_rng(sampler, device)
+    was_training = net.training
+    chosen = None
+    try:
+        for candidate in (1, 2, 4, 8, 12, 16, 24, 32):
+            if chosen is not None and time.monotonic() >= limit:
+                break
+            opt, x, loss = None, None, None
+            try:
+                net.train()
+                opt = torch.optim.AdamW(net.parameters(), lr=0.0, weight_decay=0.0)
+                x = torch.from_numpy(sampler.sample(candidate)).to(device)
+                loss, _ = compute_loss(net, prop, x, device, loss_kwargs)
+                if not torch.isfinite(loss).all():
+                    raise RuntimeError("Non-finite loss during batch selection")
+                loss.mean().backward()
+                opt.step()  # Include Adam state allocation in the memory probe.
+                sync(device)
+                chosen = candidate
+            except torch.OutOfMemoryError:
+                print(f"[batch] {candidate}: VRAM limit", flush=True)
+                break
+            finally:
+                net.zero_grad(set_to_none=True)
+                del opt, x, loss
+                torch.cuda.empty_cache()
+    finally:
+        net.load_state_dict(original)
+        net.train(was_training)
+        restore_rng(rng, sampler, device)
+    if chosen is None:
+        raise RuntimeError("No batch fits in GPU memory; reduce --base or --unroll")
+    print(f"[batch] selected {chosen}", flush=True)
+    return chosen
+
+
+def check_checkpoint(checkpoint: dict, metadata: dict, *, resume: bool = False) -> None:
+    """Compare normalized metadata returned by load_model before loading training state."""
+    keys = ("physics_version", "optics", "model")
+    if resume:
+        keys += ("seed", "loss", "pool_size")
+    for key in keys:
+        if checkpoint.get(key) != metadata[key]:
+            raise ValueError(f"checkpoint setting mismatch: {key}")
+
+
+def check_best_checkpoint(checkpoint: dict, metadata: dict, best_score: float, last_step: int) -> None:
+    """A resumed run must not silently reuse another run's best-weight artifact."""
+    check_checkpoint(checkpoint, metadata, resume=True)
+    if checkpoint.get("best_score") != best_score:
+        raise ValueError("best weights score does not match last.pt; use the original --weights path")
+    if not isinstance(checkpoint.get("step"), int) or not 0 <= checkpoint["step"] <= last_step:
+        raise ValueError("best weights step does not match the resumed run")
+
+
 def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode: str = "imgphase",
-          unroll: int = 0, stage_base: int = 16,
-          batch="auto", lr: float = 1e-3, pool_size: int = 20000, val_per_kind: int = 16,
+          unroll: int = 4, stage_base: int = 16,
+          batch="auto", lr: float = 1e-4, pool_size: int = 20000, val_per_kind: int = 16,
           output="data/training", weights="data/weights/doe_multiplane.pt", resume: bool = False,
           seed: int = 42, eval_every: float = 120.0, w_mse: float = 1.0, w_pcc: float = 1.0,
           w_ssim: float = 1.0, worst: float = 0.5, ssim_global: float = 0.5, init_weights: str | None = None,
-          max_steps: int | None = None) -> Path:
+          max_steps: int | None = None, architecture: str = "physics-unrolled") -> Path:
+    if min(minutes, lr, pool_size, val_per_kind, base, eval_every) <= 0:
+        raise ValueError("minutes, lr, pool_size, val_per_kind, base and eval_every must be positive")
+    if max_steps is not None and max_steps < 0:
+        raise ValueError("max_steps must be nonnegative")
+    if resume and init_weights:
+        raise ValueError("choose either resume or init_weights")
     output, weights = Path(output), Path(weights)
     output.mkdir(parents=True, exist_ok=True)
     weights.parent.mkdir(parents=True, exist_ok=True)
@@ -96,25 +196,37 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         torch.backends.cudnn.allow_tf32 = True
 
     loss_kwargs = dict(w_mse=w_mse, w_pcc=w_pcc, w_ssim=w_ssim, worst=worst, ssim_global=ssim_global)
-    model_cfg = {"base": base, "input_mode": input_mode, "unroll": unroll, "stage_base": stage_base}
+    net = build_model({"architecture": architecture, "base": base, "input_mode": input_mode,
+                       "unroll": unroll, "stage_base": stage_base}).to(dev)
+    model_cfg = net.config()
     metadata = dict(physics_version=PHYSICS_VERSION, optics=DEFAULT_OPTICS.as_dict(), model=model_cfg,
                     loss=loss_kwargs, seed=seed, pool_size=pool_size)
-    net = MultiPlaneUNet(base=base, input_mode=input_mode, unroll=unroll, stage_base=stage_base).to(dev)
     prop = FresnelSingleFFT(DEFAULT_OPTICS).to(dev)
     print(f"[model] {sum(p.numel() for p in net.parameters()) / 1e6:.2f} M params, input={input_mode}, unroll={unroll}, "
           f"channels={net.features.channels}", flush=True)
 
     checkpoint, best, step = None, -float("inf"), 0
+    schedule_progress = 0.0
     if resume:
-        checkpoint = torch.load(output / "last.pt", map_location=dev, weights_only=True)
-        for key in ("physics_version", "model", "seed"):
-            if checkpoint.get(key) != metadata[key]:
-                raise ValueError(f"Resume setting mismatch: {key}")
+        loaded, checkpoint = load_model(output / "last.pt", "cpu")
+        del loaded
+        check_checkpoint(checkpoint, metadata, resume=True)
         net.load_state_dict(checkpoint["net"])
         best, step = float(checkpoint["best_score"]), int(checkpoint["step"])
+        schedule_progress = float(checkpoint.get("schedule_progress", 0.0))
+        if not weights.is_file():
+            # A relocated run has no earlier best artifact; select from the resumed run.
+            best = -float("inf")
+        else:
+            loaded, best_checkpoint = load_model(weights, "cpu")
+            del loaded
+            check_best_checkpoint(best_checkpoint, metadata, best, step)
+            del best_checkpoint
     elif init_weights:
-        ckpt = torch.load(init_weights, map_location=dev, weights_only=True)
-        net.load_state_dict(ckpt["net"], strict=False)
+        loaded, ckpt = load_model(init_weights, "cpu")
+        del loaded
+        check_checkpoint(ckpt, metadata)
+        net.load_state_dict(ckpt["net"])
         print(f"[init] weights from {init_weights}", flush=True)
 
     state = dict(pid=os.getpid(), status="preparing", device=str(dev),
@@ -136,15 +248,13 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
         val = {k: torch.from_numpy(v.astype(np.float32) / 255.0)
                for k, v in fixed_quads("val", val_per_kind).items()}
         
-        # Автоподбор батча
-        if batch == "auto":
-            actual_batch = 16
-            print(f"[batch] using default {actual_batch}", flush=True)
-        else:
-            actual_batch = int(batch)
-            
+        actual_batch = choose_batch(net, prop, sampler, dev, str(batch),
+                                    min(train_deadline, time.monotonic() + 45), loss_kwargs)
         opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-5)
-        
+        if checkpoint:
+            opt.load_state_dict(checkpoint["optimizer"])
+            restore_rng(checkpoint, sampler, dev)
+        resume_progress = schedule_progress
         atomic_json(output / "config.json", dict(**metadata, batch=actual_batch, lr=lr, minutes=minutes,
                                                  torch_version=str(torch.__version__),
                                                  cuda_version=torch.version.cuda, amp=False,
@@ -152,8 +262,8 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
 
         def save_last():
             atomic_save(output / "last.pt", dict(**metadata, net=net.state_dict(), optimizer=opt.state_dict(),
-                                                 best_score=best, step=step,
-                                                 torch_rng=torch.get_rng_state()))
+                                                 best_score=best, step=step, schedule_progress=schedule_progress,
+                                                 **capture_rng(sampler, dev)))
 
         def validate_and_save(train_loss=None, train_diag=None):
             nonlocal best
@@ -193,8 +303,9 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
                 break
             net.train()
             frac = min(1.0, (time.monotonic() - started) / max(1.0, train_deadline - started))
+            schedule_progress = resume_progress + (1.0 - resume_progress) * frac
             warmup = min(1.0, (step + 1) / 200)
-            rate = lr * warmup * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * frac)))
+            rate = lr * warmup * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * schedule_progress)))
             for group in opt.param_groups:
                 group["lr"] = rate
                 
@@ -205,16 +316,10 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
             loss = loss.mean()
             
             if not torch.isfinite(loss):
-                print(f"[warn] NaN loss at step {step}, skipping batch", flush=True)
-                opt.zero_grad(set_to_none=True)
-                step += 1
-                continue
+                raise RuntimeError("Non-finite training loss; last valid checkpoint preserved")
                 
             loss.backward()
-            if step % 100 == 0:
-                g = net.unet.head.weight.grad
-                print(f"[grad] head: {g.norm().item() if g is not None else 'None'}", flush=True)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 10.0)  # clip=10.0
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0, error_if_nonfinite=True)
             opt.step()
             step += 1
             losses.append(float(loss.detach()))
@@ -229,14 +334,19 @@ def train(minutes: float = 120, device: str = "cuda", base: int = 32, input_mode
                 
         mean_diag = {k: round(float(np.mean([d[k] for d in diags])), 5) for k in diags[0]} if diags else None
         validate_and_save(float(np.mean(losses)) if losses else None, mean_diag)
-        net.load_state_dict(torch.load(weights, map_location=dev, weights_only=True)["net"])
+        loaded, best_checkpoint = load_model(weights, "cpu")
+        del loaded
+        check_best_checkpoint(best_checkpoint, metadata, best, step)
+        net.load_state_dict(best_checkpoint["net"])
+        del best_checkpoint
         status(status="evaluating", stop_reason=stop_reason)
         
         from .pipeline import run, save_preview
         from .data import classic_testsets
         sets = classic_testsets()
-        res = run(sets["photos_classic"], "net", model=net, device=str(dev))
-        save_preview(res, output / "preview.png")
+        if "photos_classic" in sets:
+            res = run(sets["photos_classic"], "net", model=net, device=str(dev))
+            save_preview(res, output / "preview.png")
         
         status(status="completed", stop_reason=stop_reason, weights=str(weights))
         print(f"[done] best weights: {weights}", flush=True)
@@ -253,10 +363,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--minutes", type=float, default=120)
     ap.add_argument("--base", type=int, default=32)
+    ap.add_argument("--architecture", choices=ARCHITECTURES, default="physics-unrolled")
     ap.add_argument("--input-mode", choices=INPUT_MODES, default="imgphase")
-    ap.add_argument("--unroll", type=int, default=0)
+    ap.add_argument("--unroll", type=int, default=4)
     ap.add_argument("--stage-base", type=int, default=16)
-    ap.add_argument("--batch", default="16")
+    ap.add_argument("--batch", default="auto")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--pool-size", type=int, default=20000)
     ap.add_argument("--val-per-kind", type=int, default=16)
@@ -278,7 +389,7 @@ def main(argv: list[str] | None = None) -> None:
           pool_size=a.pool_size, val_per_kind=a.val_per_kind, output=a.output, weights=a.weights,
           resume=a.resume, seed=a.seed, eval_every=a.eval_every, w_mse=a.w_mse, w_pcc=a.w_pcc,
           w_ssim=a.w_ssim, worst=a.worst, ssim_global=a.ssim_global, init_weights=a.init_weights,
-          max_steps=a.max_steps)
+          max_steps=a.max_steps, architecture=a.architecture)
 
 if __name__ == "__main__":
     main()

@@ -148,6 +148,8 @@ class SynthesisService:
 
         try:
             model, ckpt = load_model(self.weights, self.device)
+            if model.prop.optics != OPTICS:
+                raise ValueError("checkpoint optics do not match server optics")
         except Exception as exc:  # несовместимые веса не должны ронять сервер
             self.model, self.model_info = None, {"error": str(exc)}
             return
