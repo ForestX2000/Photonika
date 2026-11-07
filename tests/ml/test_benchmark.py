@@ -114,6 +114,35 @@ def test_strong_baseline_receives_matching_gs_budget(monkeypatch, tmp_path):
             assert kwargs["adam_steps"] == 23
 
 
+def test_source_protocol_requests_held_out_source_split_and_records_manifest(monkeypatch, tmp_path):
+    import ml.data
+    import ml.model
+    import ml.pipeline
+    import tools.benchmark_models as tool
+
+    path = tmp_path / "checkpoint.pt"
+    path.write_bytes(b"source split fixture")
+    calls = []
+
+    def quads(split, count, photo_split):
+        calls.append((split, photo_split))
+        return {"photos": np.zeros((1, 4, 8, 8), dtype=np.uint8)}
+
+    manifest = [{"id": "held-out", "sha256": "sample", "split": "test"}]
+    monkeypatch.setattr(tool, "fixed_quads", quads)
+    monkeypatch.setattr(ml.data, "photo_source_manifest", lambda: manifest)
+    metadata = {"optics": DEFAULT_OPTICS.as_dict(), "model": {"architecture": "fixture"}}
+    monkeypatch.setattr(ml.model, "load_model", lambda *a: (object(), metadata))
+    monkeypatch.setattr(ml.pipeline, "run", lambda *a, **kw:
+                        SimpleNamespace(rows=[{"pcc": .2, "ssim": .1}] * 4, time_ms=1.))
+    report = benchmark([path], device="cpu", count=1, split="test", photo_split="source",
+                       gs_iters=1, refine_steps=0, classic=False)
+    assert calls == [("test", "test")]
+    assert report["protocol"]["photo_sources"]["hash"] == ml.data.photo_manifest_hash(manifest)
+    assert report["protocol"]["photo_sources"]["sources"] == manifest
+    assert report["protocol"]["split_scope"] == "content-disjoint photograph sources"
+
+
 @pytest.mark.parametrize("kwargs", [{"count": 0}, {"gs_iters": 0},
                                     {"refine_steps": -1}, {"adam_steps": -1},
                                     {"seeds": ()}, {"seeds": (1, 1)}])

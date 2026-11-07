@@ -63,7 +63,8 @@ def summarize(records: list[dict]) -> dict:
 
 def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
               count: int = 4, seeds: tuple[int, ...] = (0,), gs_iters: int = 50,
-              refine_steps: int = 10, classic: bool = True, adam_steps: int = 0) -> dict:
+              refine_steps: int = 10, classic: bool = True, adam_steps: int = 0,
+              photo_split: str = "legacy") -> dict:
     """Benchmark identical quads for every method; exclude one warmup per method."""
     import torch
 
@@ -73,6 +74,8 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
 
     if not weights:
         raise ValueError("at least one checkpoint is required")
+    if photo_split not in ("legacy", "source"):
+        raise ValueError("photo_split must be legacy or source")
     if split not in SPLIT_SEEDS or count < 1 or gs_iters < 1 or refine_steps < 0 or adam_steps < 0:
         raise ValueError("invalid split, count or iteration budget")
     if not seeds or len(set(seeds)) != len(seeds):
@@ -89,7 +92,14 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    quads = fixed_quads(split, count)
+    if photo_split == "source":
+        quads = fixed_quads(split, count, photo_split=split)
+        from ml.data import photo_source_manifest, photo_manifest_hash, PHOTO_SPLIT_VERSION
+        manifest = photo_source_manifest()
+        source_metadata = dict(version=PHOTO_SPLIT_VERSION, hash=photo_manifest_hash(manifest), sources=manifest)
+    else:
+        quads = fixed_quads(split, count)
+        source_metadata = None
     generated_count = sum(len(batch) for batch in quads.values())
     classic_sets = classic_testsets() if classic else {}
     # Prefix classic names so generated categories and reserved-source examples
@@ -111,7 +121,10 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
                         if torch.device(device).type == "cuda" else "CPU"),
         "protocol": {
             "split": split, "split_seed": SPLIT_SEEDS[split],
-            "split_scope": "independent generated crops; photograph sources may overlap training",
+            "photo_split": photo_split,
+            "photo_sources": source_metadata,
+            "split_scope": ("content-disjoint photograph sources" if photo_split == "source" else
+                            "independent generated crops; photograph sources may overlap training"),
             "quads_per_kind": count, "distinct_quads": len(cases),
             "generated_distinct_quads": generated_count,
             "classic_case_names": list(classic_sets),
@@ -185,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--weights", type=Path, nargs="+", required=True)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--split", choices=("val", "test"), default="test")
+    parser.add_argument("--photo-split", choices=("legacy", "source"), default="legacy")
     parser.add_argument("--count", type=int, default=4, help="quads per category")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0])
     parser.add_argument("--gs-iters", type=int, default=50)
@@ -204,7 +218,8 @@ def main(argv: list[str] | None = None) -> None:
     torch.set_num_threads(args.threads)
     report = benchmark(args.weights, device=args.device, split=args.split, count=args.count,
                        seeds=tuple(args.seeds), gs_iters=args.gs_iters,
-                       refine_steps=args.refine_steps, classic=args.classic, adam_steps=args.adam_steps)
+                       refine_steps=args.refine_steps, classic=args.classic, adam_steps=args.adam_steps,
+                       photo_split=args.photo_split)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
                         encoding="utf-8")

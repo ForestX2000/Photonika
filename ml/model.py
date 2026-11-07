@@ -35,10 +35,13 @@ def build_model(config: dict, optics: Optics = DEFAULT_OPTICS) -> nn.Module:
         from .pdr_model import MultiPlaneUNet as PDRNet
         return PDRNet(**kwargs)
     if architecture == "physics-unrolled":
-        from .physics_model import PhysicsUnrolledNet
-        if config.get("model_version", 1) != 1:
-            raise ValueError("Unsupported physics-unrolled model_version")
-        return PhysicsUnrolledNet(**kwargs)
+        from .physics_model import PhysicsUnrolledNet, PhysicsUnrolledNetV2
+        version = config.get("model_version", 1)
+        if version == 1:
+            return PhysicsUnrolledNet(**kwargs)
+        if version == 2:
+            return PhysicsUnrolledNetV2(**kwargs, spectral_modes=int(config.get("spectral_modes", 8)))
+        raise ValueError("Unsupported physics-unrolled model_version")
     raise ValueError(f"Unknown architecture {architecture!r}; expected one of {ARCHITECTURES}")
 
 
