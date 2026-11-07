@@ -1,6 +1,6 @@
 # Фоновое обучение на локальной NVIDIA GPU (окно терминала можно закрыть).
-#   .\scripts\train-local.ps1 -Minutes 480                         # ночной прогон v1
-#   .\scripts\train-local.ps1 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2   # дообучение v2
+#   .\scripts\train-local.ps1 -Architecture physics-unrolled -Base 16 -StageBase 8 -Minutes 480
+#   .\scripts\train-local.ps1 -Architecture unet -Unroll 0 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2
 #   .\scripts\train-local.ps1 -Resume -Minutes 120                  # продолжить после stop-training.ps1
 param(
     [ValidateRange(1, 1440)]
@@ -8,10 +8,15 @@ param(
     [ValidateSet('cuda', 'cpu')]
     [string]$Device = 'cuda',
     [int]$Base = 32,
+    [ValidateSet('physics-unrolled', 'unet', 'pdr')]
+    [string]$Architecture = 'physics-unrolled',
+    [ValidateRange(0, 32)]
+    [int]$Unroll = 4,
+    [int]$StageBase = 16,
     [ValidateSet('imgphase', 'backprop', 'raw')]
     [string]$InputMode = 'imgphase',
     [string]$Batch = 'auto',
-    [double]$Lr = 1e-3,
+    [double]$Lr = 1e-4,
     [double]$WSsim = 1.0,
     [double]$Worst = 0.5,
     [int]$PoolSize = 20000,
@@ -60,6 +65,7 @@ $TrainingArguments = @(
     '--device', $Device,
     '--minutes', $Minutes.ToString($Inv),
     '--base', $Base.ToString($Inv), '--input-mode', $InputMode, '--batch', $Batch,
+    '--architecture', $Architecture, '--unroll', $Unroll.ToString($Inv), '--stage-base', $StageBase.ToString($Inv),
     '--lr', $Lr.ToString($Inv), '--w-ssim', $WSsim.ToString($Inv), '--worst', $Worst.ToString($Inv),
     '--pool-size', $PoolSize.ToString($Inv),
     '--output', ('"{0}"' -f $RunDirectory),

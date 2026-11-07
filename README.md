@@ -1,183 +1,229 @@
 # Photonika — нейросетевой синтез фазового ДОЭ
 
-Кейс хакатона НИЯУ МИФИ «Разработка нейросетевого метода синтеза дифракционных оптических
-элементов». Сеть получает **4 изображения 128×128** и выдаёт **один фазовый ДОЭ 128×128**,
-из которого по формуле Френеля с одним FFT на расстояниях **24,1 / 25,3 / 26,5 / 27,7 мм**
-восстанавливается каждое из изображений (λ = 532 нм, пиксель ПВМС 10 мкм).
+Решение кейса хакатона НИЯУ МИФИ «Разработка нейросетевого метода синтеза дифракционных оптических элементов».
+Модель **совместно обрабатывает 4 изображения 128×128** и формирует **один фазовый ДОЭ 128×128**.
+Из него рассчитываются четыре восстановления по формуле дифракции Френеля.
 
-Результат в формате сдачи: `doe.png` (0 = −π, 255 = +π), `recon_1..4.png` (модуль поля, 8 бит),
-`metrics.json` / `metrics.csv` (PCC и SSIM для каждой из 4 пар).
+Основной файл для проверки — `doe.png`: **PNG, 128×128 пикселей, 8 бит, Grayscale**
+(один канал, режим `L`, без альфа-канала). Значения 0…255 кодируют фазу от −π до +π.
 
----
+## Сдача решения
 
-## Быстрый старт
+По регламенту организаторов:
+
+- **До 09:30** — загрузить и отправить все материалы через [форму сдачи](https://forms.yandex.ru/u/6aedea5f6f1ca49998bfe6e7).
+- **09:30 — Stop Coding:** разработка заканчивается, после этого изменять решение нельзя.
+- **13:00** — публикация списка команд, прошедших в финал.
+- **До 13:30** — завершить презентацию и загрузить её в GitHub-репозиторий. Презентацию можно готовить после Stop Coding.
+- **14:00** — очная защита; онлайн-командам организаторы пришлют ссылку в чат.
+- Защита: **5 минут презентации + 5 минут ответов на вопросы**. Слушать выступления могут все участники.
+
+Для сдачи нужен GitHub-репозиторий, содержащий:
+
+1. Исходный код нейросети — `ml/model.py`, `ml/physics_model.py`, `ml/pdr_model.py`; обучение — `ml/training.py`.
+2. **Обученные веса итоговой модели**. В примерах ниже используется `data/weights/doe_multiplane.pt`.
+3. Dockerfile — [`docker/Dockerfile`](docker/Dockerfile).
+4. Список зависимостей — [`requirements.txt`](requirements.txt). PyTorch устанавливается автоматически при сборке Docker-образа.
+5. Этот `README.md` с инструкцией по сборке, запуску и проверке.
+
+**Статус весов:** сейчас `.gitignore` исключает `data/weights/` и файлы моделей, а `.dockerignore`
+исключает их из образа. В отслеживаемых Git-файлах весов нет. До сдачи необходимо включить
+выбранный обученный checkpoint в репозиторий (например, через Git LFS), согласовав исключения
+в `.gitignore`, и проверить его доступность после клонирования. При использовании Git LFS
+должен быть получен сам файл весов, а не текстовый указатель. Локальные экспериментальные
+checkpoint не означают, что финальные веса уже опубликованы.
+
+Docker-команды ниже монтируют веса из репозитория в контейнер. **Пока финальные веса не включены
+в сдаваемый репозиторий, требование к комплектности решения не выполнено.** Если итоговый файл
+называется иначе, во всех командах замените значение `--weights`. Для нейросетевой проверки
+метод задаётся явно: без весов команда завершится ошибкой, а не переключится на итерационный метод.
+
+## Сборка Docker
+
+Все команды выполняются из корня репозитория. Требуется работающий Docker с Linux-контейнерами;
+библиотеки Python, Node.js и системные зависимости устанавливаются внутри образа автоматически.
+При первой сборке нужен доступ к сети. Устанавливать Python, PyTorch или npm на хосте не требуется.
+
+Рекомендуемый переносимый вариант — **CPU**, без настройки GPU:
+
+```powershell
+docker build -f docker/Dockerfile --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu -t photonika:cpu .
+```
+
+Команды с `${PWD}` ниже подходят для PowerShell и Bash, если выполнять их из корня проекта.
+
+## Запуск на одном тестовом комплекте
+
+Поместите четыре тестовых изображения в `submission_inputs/set01/` под именами
+`1.png`, `2.png`, `3.png`, `4.png`. Каждый вход должен иметь размер 128×128.
+Порядок `--inputs` определяет соответствие расстояниям восстановления:
+
+- `1.png` → 24,1 мм;
+- `2.png` → 25,3 мм;
+- `3.png` → 26,5 мм;
+- `4.png` → 27,7 мм.
+
+Длина волны — 532 нм, шаг пикселя ДОЭ — 10 мкм. Параметры заданы в `ml/config.py`.
+Все четыре входа передаются **одним вызовом**, который создаёт один общий ДОЭ.
+
+```powershell
+docker run --rm -v "${PWD}/submission_inputs:/inputs:ro" -v "${PWD}/data/weights:/app/data/weights:ro" -v "${PWD}/results:/app/results" photonika:cpu python -m ml.cli synth --inputs /inputs/set01/1.png /inputs/set01/2.png /inputs/set01/3.png /inputs/set01/4.png --weights /app/data/weights/doe_multiplane.pt --method net+gs --refine-steps 30 --device cpu --out /app/results/set01
+```
+
+Результат появится на хосте в `results/set01/`:
+
+- **`doe.png`** — фазовый ДОЭ в требуемом формате; именно его используют для восстановления.
+- `recon_1.png` … `recon_4.png` — восстановления из сохранённого 8-битного ДОЭ.
+- `source_1.png` … `source_4.png` — входы после загрузки и приведения к Grayscale.
+- `metrics.json`, `metrics.csv` — метрики по каждой плоскости и средние по комплекту.
+- `preview.png` — визуальное сравнение входов, ДОЭ и восстановлений.
+
+`net+gs` выполняет проход сети и 30 итераций многоплоскостного GS. Для измерения одного прохода
+нейросети используйте `--method net`. Выбранный метод и параметры сохраняются в `metrics.json`.
+Изображения другого размера загрузчик обрезает и масштабирует с предупреждением; для официальной
+проверки следует передавать исходные 128×128 без изменения размеров.
+
+Проверка формата выходного файла внутри контейнера:
+
+```powershell
+docker run --rm -v "${PWD}/results:/app/results:ro" photonika:cpu python -c "from PIL import Image; im = Image.open('/app/results/set01/doe.png'); assert im.format == 'PNG' and im.size == (128, 128) and im.mode == 'L'; print(im.format, im.size, im.mode)"
+```
+
+Независимый пересчёт дифракции и метрик по готовому ДОЭ:
+
+```powershell
+docker run --rm -v "${PWD}/submission_inputs:/inputs:ro" -v "${PWD}/results:/app/results:ro" photonika:cpu python tools/verify_submission.py --doe /app/results/set01/doe.png --inputs /inputs/set01/1.png /inputs/set01/2.png /inputs/set01/3.png /inputs/set01/4.png
+```
+
+Скрипт использует NumPy, Pillow и scikit-image и не импортирует код модели.
+
+## Тестирование и оценка
+
+Организаторы проверяют решение **не менее чем на 5 комплектах**, каждый из которых содержит
+4 изображения 128×128 с различными типами объектов. Для каждого комплекта синтезируется
+отдельный общий ДОЭ, затем выполняется расчёт дифракции Френеля на четырёх заданных расстояниях.
+
+- **SSIM** — основная метрика структурного сходства.
+- **Pearson (PCC)** — дополнительная метрика корреляции.
+- Обе метрики вычисляются отдельно для каждой из четырёх пар «вход — восстановление»,
+  затем усредняются по четырём плоскостям.
+- Итоговые SSIM и Pearson — средние соответствующих оценок по всем тестовым комплектам.
+- Дополнительно фиксируется время работы модели, поскольку задача включает ускорение синтеза ДОЭ.
+
+Локальные отчёты содержат `planes` (оценки каждой плоскости), `mean.ssim`, `mean.pcc` и
+`synthesis_time_ms`. Последнее — время синтеза, включая доуточнение выбранного метода;
+загрузка весов, чтение входов, восстановление для отчёта и сохранение файлов в него не входят.
+На CUDA замер выполняется с синхронизацией. Для сравнения скорости следует фиксировать устройство,
+метод, число итераций и отдельно учитывать полный запуск контейнера.
+
+Локальный SSIM реализован через `skimage.metrics.structural_similarity`: окно 7×7,
+`data_range=1`, каждое изображение нормируется на свой максимум. Дополнительный `ssim_global`
+оставлен для диагностики. Окончательные оценки определяются реализацией проверки организаторов;
+сам регламент не уточняет параметры SSIM и нормализации.
+
+Для проверки пяти внешних комплектов создайте папки `submission_inputs/set01` … `set05`,
+в каждой — `1.png` … `4.png`, и выполните в **PowerShell**:
+
+```powershell
+foreach ($set in @('set01', 'set02', 'set03', 'set04', 'set05')) {
+    docker run --rm -v "${PWD}/submission_inputs:/inputs:ro" -v "${PWD}/data/weights:/app/data/weights:ro" -v "${PWD}/results:/app/results" photonika:cpu python -m ml.cli synth --inputs "/inputs/$set/1.png" "/inputs/$set/2.png" "/inputs/$set/3.png" "/inputs/$set/4.png" --weights /app/data/weights/doe_multiplane.pt --method net+gs --refine-steps 30 --device cpu --out "/app/results/$set"
+    if ($LASTEXITCODE -ne 0) { throw "Ошибка обработки комплекта $set" }
+}
+```
+
+Каждый комплект получит собственный `results/setXX/doe.png` и отчёт. Для итоговых значений
+усредните `mean.ssim` и `mean.pcc` из пяти отчётов `metrics.json` по отдельности.
+
+Для предварительной проверки сборка образа автоматически создаёт демонстрационные наборы
+в `/app/data/testsets/`: `photos_classic`, `text_binary`, `mephi_letters`, `digits`,
+`random_photos_0` и другие. Они служат локальными примерами и не заменяют тесты организаторов.
+Быстрая проверка контейнера без весов:
+
+```powershell
+docker run --rm photonika:cpu python -m ml.cli synth --inputs data/testsets/photos_classic/1.png data/testsets/photos_classic/2.png data/testsets/photos_classic/3.png data/testsets/photos_classic/4.png --method gs --gs-iters 2 --device cpu --out /tmp/photonika-smoke --no-preview
+```
+
+Этот короткий итерационный запуск проверяет работоспособность конвейера, но не качество нейросети.
+
+## GPU и веб-демо
+
+Для GPU нужны совместимый драйвер NVIDIA и доступ Docker к GPU (NVIDIA Container Toolkit).
+CUDA-библиотеки и PyTorch устанавливаются внутри образа:
+
+```powershell
+docker build -f docker/Dockerfile -t photonika:cuda .
+```
+
+В команде синтеза добавьте `--gpus all` после `docker run`, замените образ на `photonika:cuda`,
+а `--device cpu` — на `--device cuda`. Для прогрева перед замером можно добавить `--warmup`.
+
+Веб-интерфейс (FastAPI + React), CPU, <http://localhost:8000>:
+
+```powershell
+docker compose --profile cpu up --build web-cpu
+```
+
+Веб-интерфейс с GPU, тот же адрес:
+
+```powershell
+docker compose up --build web
+```
+
+Альтернативное Streamlit-демо, <http://localhost:8501>:
+
+```powershell
+docker compose --profile streamlit up --build streamlit
+```
+
+Останавливайте один веб-сервис перед запуском другого на порту 8000. Веб-сервисы монтируют
+веса из `data/weights/`; для воспроизводимого тестирования используйте CLI-команду выше
+с явно заданными весами и методом.
+
+## Устройство решения и обучение
+
+- `ml/model.py` — создание и загрузка моделей; архитектура хранится в checkpoint.
+- `ml/physics_model.py` — U-Net с attention, дифференцируемой оптикой и обучаемыми стадиями GS (`physics-unrolled`).
+- `ml/pdr_model.py` — комплексная архитектура `pdr`; `ml/legacy_model.py` — исходная `unet`.
+- `ml/fresnel.py` — распространение Френеля: NumPy для пересчёта из PNG и PyTorch для обучения.
+- `ml/pipeline.py` — совместная обработка четырёх входов, квантование фазы, сохранение и повторное чтение ДОЭ перед оценкой.
+- `ml/metrics.py`, `ml/losses.py` — метрики и дифференцируемые функции потерь.
+- `ml/data.py` — генерация обучающих данных и тестовых четвёрок.
+- `backend/`, `frontend/` — API и веб-интерфейс.
+
+Доступные методы: `net`, `net+gs`, `net+adam`, `net+gs+adam`, `gs`, `gs+adam`, `adam`.
+Без явного `--method` CLI выбирает `net+gs`, если найден указанный файл весов, иначе `gs+adam`.
+При сдаче нейросетевого решения используйте явный метод `net` или `net+gs`.
+
+Подробности архитектуры и обучения: [physics-unrolled](docs/physics-unrolled.md).
+Для RTX A6000: [подготовка пакета, обучение и выбор checkpoint](docs/a6000.md).
+Обучение не требуется для запуска с уже предоставленными финальными весами.
+
+Для разработки вне Docker (PowerShell; Python 3.12):
 
 ```powershell
 python -m venv .venv
-# GPU (NVIDIA, драйвер 535+):
-.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-# или только CPU:
-# .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-.\.venv\Scripts\python.exe -m ml.cli info            # параметры физики, CUDA, наличие весов
-.\.venv\Scripts\python.exe -m pytest -q               # тесты физики, метрик, методов, UI
+.\.venv\Scripts\python.exe -m ml.cli info
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Синтез в формате сдачи (i-е изображение восстанавливается на i-м расстоянии):
+Пример обучения кандидата (на устройстве с CUDA):
 
 ```powershell
-python -m ml.cli synth --inputs 1.png 2.png 3.png 4.png --out results/run1
-python -m ml.cli synth --inputs ... --out results/run1 --method gs+adam   # без нейросети
+.\.venv\Scripts\python.exe -m ml.training --architecture physics-unrolled --base 16 --unroll 4 --stage-base 8 --batch 4 --lr 1e-4 --minutes 120 --output data/runs/physics_b16_u4 --weights data/weights/physics_unrolled.pt
 ```
 
-Метод по умолчанию: `net+gs`, если есть веса `data/weights/doe_multiplane.pt`, иначе `gs+adam`.
+Для такого обучения установите CUDA-сборку PyTorch вместо CPU-сборки. Полученный checkpoint
+нужно оценить на отдельных тестовых комплектах перед выбором финальных весов.
 
-> **Веса в репозиторий не попадают** (`.gitignore`: `data/weights/`, `*.pt`, `*.pth`, `*.ckpt`,
-> `*.safetensors`, `*.onnx`; в Docker-образ тоже не копируются). Файл весов передаётся внутри
-> команды напрямую и кладётся в `data/weights/doe_multiplane.pt`. Не добавляйте его через `git add -f`.
-Все методы: `net` (один проход сети), `net+gs` (сеть + K итераций GS, `--refine-steps`),
-`net+adam` (сеть + K шагов Adam), `gs` (многоплоскостный Gerchberg–Saxton, `--gs-iters`),
-`gs+adam`, `adam`.
+## Проверка перед отправкой
 
-Что создаётся в `--out`: `doe.png`, `recon_1..4.png`, `source_1..4.png` (входы после приведения
-к 8 бит 128×128), `metrics.json`, `metrics.csv`, `preview.png` (исходные / ДОЭ / восстановления).
-
-Проверка готового результата:
-
-```powershell
-python -m ml.cli verify --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png
-python tools/verify_submission.py --doe results/run1/doe.png --inputs 1.png 2.png 3.png 4.png --recon results/run1/recon_1.png results/run1/recon_2.png results/run1/recon_3.png results/run1/recon_4.png
-```
-
-`tools/verify_submission.py` — самостоятельный скрипт (numpy + Pillow + scikit-image), не импортирует
-код проекта: им можно независимо пересчитать восстановление и метрики по PNG.
-
----
-
-## Физика
-
-Формула данная нас свыше:
-
-$$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathrm{FFT}\!\left[H(u,v)\,e^{\frac{j\pi}{\lambda z}(u^2+v^2)}\right]$$
-
-Внешние множители не влияют на модуль, поэтому `|K_i| = |FFT(exp(jφ) · Q_i)|`, где
-`Q_i = exp(jπ(u²+v²)/(λ z_i))`. Координаты `(u, v)` отсчитываются от центра ДОЭ с шагом 10 мкм,
-результат центрируется `fftshift`, FFT нормирован как `ortho` (энергия сохраняется).
-Реализация: `ml/fresnel.py` (numpy — эталон для сдачи, torch — дифференцируемая версия).
-
-* **Критическое расстояние** `N·Δx²/λ = 24,06 мм`. Все расстояния из условия чуть больше него, поэтому
-  квадратичная фаза дискретизирована без алиасинга и формула с одним FFT корректна.
-* **Шаг пикселя в плоскости восстановления** `λz/(NΔx)` растёт от 10,02 до 11,51 мкм. Изображения
-  сравниваются на сетке 128×128 без пересчёта масштаба — как в условии.
-* Тесты (`tests/test_fresnel.py`): FFT совпадает с прямым суммированием по формуле (N = 16), torch
-  совпадает с numpy, энергия сохраняется, фаза ↔ PNG без потерь сверх шага квантования, линза
-  `−π r²/(λ z_i)` фокусируется в центр именно в плоскости `z_i`.
-
-## Методы
-
-* **Многоплоскостный GS** (`app/baselines.py`): поле во всех 4 плоскостях → модуль заменяется на
-  целевой при сохранении фазы → каждая плоскость обратно распространяется к ДОЭ → сумма → фаза.
-* **Adam по фазе**: прямая оптимизация фазы ДОЭ по той же функции потерь, что и у сети.
-* **Нейросеть** (`app/model.py`, `MultiPlaneUNet`): U-Net на 4 уровня (128→64→32→16→8), свёртки
-  с циклическим паддингом (FFT периодичен), GroupNorm. Выход — комплексная поправка `(a, b)`,
-  фаза получается через `atan2` (без разрыва на ±π) и сразу лежит в [−π, π]. Голова
-  инициализирована так, что **необученная сеть выдаёт ровно ∠S = одна итерация GS** — обучение
-  улучшает этот старт. Режимы входа (`--input-mode`):
-  * `imgphase` (по умолчанию) — U-Net в плоскости изображений (признаки и цели совпадают
-    пространственно) предсказывает фазу поля в каждой из 4 плоскостей, затем одно обратное
-    распространение и сумма в плоскости ДОЭ — по духу DeepCGH;
-  * `backprop` — U-Net в плоскости ДОЭ; вход — изображения + обратное распространение каждой цели
-    `B_i = IFFT(A_i e^{jψ_i})·Q_i*` (Re/Im) + cos/sin ∠ΣB_i;
-  * `raw` — только 4 изображения (контроль для A/B).
-  * `--unroll K` — после U-Net ещё K стадий «шаг GS (4 FFT) + маленькая U-Net-поправка». При
-    инициализации это ровно GS-K; время инференса фиксировано (никаких итераций до сходимости).
-* **Функция потерь** (`ml/losses.py`) для каждой плоскости:
-  `MSE(s·|K|, A)/mean(A²) + (1 − PCC) + (1 − SSIM*)`, `s` — оптимальный масштаб (MSE оценивает
-  форму, а не яркость), `SSIM*` — смесь локального SSIM и ИСС со слайда 3 по изображениям,
-  нормированным на максимум (как у жюри, см. выше). Дифференцируемые SSIM совпадают с skimage
-  и с формулой слайда (проверено тестами). Плоскости складываются как
-  `(1 − w)·среднее + w·soft-max-взвешенная сумма` (`--worst`, по умолчанию 0,5): худшая плоскость
-  получает больший вес и не «умирает» (иначе страдает низкоконтрастная Луна).
-* **Доуточнение**: выход сети — стартовая фаза для K итераций GS (`net+gs`, дёшево) или K шагов
-  Adam (`net+adam`). Шаг Adam в несколько раз дороже итерации GS (обратный проход через FFT и SSIM),
-  поэтому основной запасной режим — `net+gs`.
-
-## Данные
-
-`ml/data.py`, пул 20 000 изображений 128×128 (кэшируется в `data/pool/`):
-символы из TTF-шрифтов (кириллица, латиница, цифры; 17 шрифтов Windows или DejaVu/Liberation в
-Docker) — 25 %, геометрические фигуры — 15 %, фото — 40 %, 1/f-текстуры — 20 % (организаторы:
-«изображения могут быть разнообразные, но не совсем простые» — упор на фото). Четвёрки
-собираются случайно на лету: в половине случаев из одной категории, иначе смешанные;
-аугментации — инверсия и гамма. Фото: 15 встроенных изображений scikit-image (случайные кропы)
-и, если есть, папка `data/photos/`:
-
-```powershell
-python -m ml.data fetch-div2k          # DIV2K valid HR, 100 фото, ≈450 МБ → data/photos/div2k
-python -m ml.data build-pool --count 20000
-python -m ml.data preview              # data/pool_preview.png
-```
-
-После добавления фото удалите `data/pool/` или смените `--pool-size`, чтобы пул пересобрался.
-
-Тестовые наборы (`data/testsets/`, `python -m ml.cli make-testsets`) в обучение не входят:
-`photos_classic` (camera, astronaut, coins, moon), `text_binary` (text, page, horse, фигуры),
-`mephi_letters` («МИФИ»), `digits` («2026»), `random_*` — случайные четвёрки с test-seed.
-Фиксированные val-четвёрки (буквы / фото / смешанные) генерируются по отдельному seed.
-
-## Обучение
-
-```powershell
-# фаза 1: A/B-прогоны (4 × 20 мин): backprop / imgphase, без unroll и с unroll 4
-.\scripts\ab-test.ps1
-.\scripts\ab-test.ps1 -Minutes 15 -Only ab_backprop_b32,ab_imgphase_b32   # часть вариантов
-python -m ml.compare_runs "data/runs/ab_*"          # таблица + data/runs/compare.png
-
-# фаза 2: ночной прогон выбранного варианта в фоне (окно можно закрыть)
-.\scripts\train-local.ps1 -Minutes 480 -InputMode imgphase -Base 32   # вариант, выбранный по A/B
-.\scripts\training-status.ps1                        # статус, val PCC/SSIM по категориям
-.\scripts\stop-training.ps1                          # мягкая остановка с сохранением
-.\scripts\train-local.ps1 -Resume -Minutes 120       # продолжить
-
-# фаза 3: дообучение v2 (меньше lr, больше вес SSIM)
-.\scripts\train-local.ps1 -Minutes 240 -InitWeights data\weights\doe_multiplane.pt -Lr 3e-5 -WSsim 2 -RunName training_v2 -WeightsName doe_multiplane_v2.pt
-```
-
-Напрямую: `python -m ml.training --help`. Сохраняется: `data/weights/doe_multiplane.pt` (лучшие веса
-по val PCC + SSIM), `data/training/{last.pt, metrics.jsonl, status.json, config.json,
-final_report.json, preview.png, training.log}`. Возобновление проверяет совпадение версии
-физики и конфигурации сети. Финальный отчёт сравнивает сеть, сеть+20 и GS-50 на test-наборах
-по 8-битным PNG.
-
-**Критерий go/no-go в T+16** (из плана): если PCC сети на «фото» ≥ 0,35 и не хуже GS-50 —
-основной режим `net`, иначе `net+gs` (сеть как старт для K итераций GS).
-
-## Бенчмарк «качество / время»
-
-```powershell
-python -m ml.cli bench --sets data/testsets/photos_classic data/testsets/mephi_letters --device cuda
-```
-
-Время — медиана 3 запусков после прогрева, с синхронизацией CUDA. Результат: `results/bench/bench.md`,
-`bench.json`, `quality_vs_time.png`.
-
-## Демо
-
-```powershell
-streamlit run app/ui.py
-```
-
-Загрузка 4 PNG или тестового набора, выбор метода, ДОЭ, 4 восстановления, таблица метрик,
-сравнение по времени с GS-50, ползунок z от 23 до 29 мм (изображения фокусируются по очереди),
-скачивание `doe.png`/`recon_*.png`/`metrics.json` архивом.
-
-## Docker
-
-```powershell
-docker compose up --build                                   # демо с GPU, http://localhost:8501
-docker compose --profile cpu up --build doe-demo-cpu        # без GPU, http://localhost:8502
-```
-
-Веса монтируются из `data/weights`, результаты — в `results/`.
-
+- [ ] В GitHub доступны исходники, обученные финальные веса, `docker/Dockerfile`, `requirements.txt` и `README.md`.
+- [ ] README указывает фактический файл финальных весов; он загружается явно выбранным нейросетевым методом.
+- [ ] После чистого клонирования Docker собирается и запускает решение без ручной установки библиотек и настройки Python-окружения.
+- [ ] На каждом из не менее пяти комплектов четыре входа обрабатываются совместно и создаётся один `doe.png`.
+- [ ] Каждый ДОЭ — PNG 128×128, 8 бит, Grayscale (`L`).
+- [ ] Проверены восстановления Френеля, SSIM, Pearson и время работы; отчёты сохранены по комплектам.
+- [ ] Все материалы отправлены через форму до 09:30; после Stop Coding код и веса не меняются.
+- [ ] Презентация загружена в GitHub до 13:30 и рассчитана на 5 минут выступления.
