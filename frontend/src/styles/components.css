@@ -402,7 +402,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .viewer-title { font: 700 clamp(34px, 4.4vw, 56px)/.95 var(--display); text-transform: uppercase; margin-bottom: 16px; }
 .viewer-copy p { margin: 0 0 24px; }
 .viewer-stage { display: grid; gap: 16px; }
-.viewer-img { position: relative; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--line-strong); background: #000; aspect-ratio: 1; max-width: 460px; width: 100%; justify-self: center; box-shadow: 0 0 80px -20px rgba(92, 255, 143, .45); }
+.viewer-img { position: relative; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--line-strong); background: #000; aspect-ratio: 1; max-width: 460px; width: 100%; justify-self: center; box-shadow: 0 0 80px -20px rgba(255, 255, 255, .22); }
 .viewer-img img { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; }
 .z-badge, .focus-badge { position: absolute; top: 14px; padding: 6px 12px; border-radius: var(--pill); background: rgba(5, 13, 10, .8); backdrop-filter: blur(6px); font: 600 14px/1 var(--display); letter-spacing: .04em; }
 .z-badge { left: 14px; }

@@ -22,7 +22,7 @@ from PIL import Image
 from ml.config import DEFAULT_OPTICS, PHYSICS_VERSION
 from ml.data import fit_square
 from ml.fresnel import fresnel_modulus_np, uint8_to_phase
-from ml.metrics import DEFAULT_NORM
+from ml.metrics import DEFAULT_NORM, modulus_to_uint8
 from ml.pipeline import METHOD_HELP, METHODS, Result, reconstruct, run
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -266,7 +266,8 @@ class SynthesisService:
             raise UserError("z должно быть в диапазоне 15–40 мм")
         entry = self.get(rid)
         mod = fresnel_modulus_np(uint8_to_phase(entry.result.doe_u8), OPTICS, [z_mm * 1e-3])[0]
-        return png_bytes(laser_colors(mod))
+        # чёрно-белый срез, нормировка на максимум — как у карточек плоскостей (recon_*.png)
+        return png_bytes(modulus_to_uint8(mod, None, "max"))
 
     def zip_bytes(self, rid: str) -> bytes:
         entry = self.get(rid)
