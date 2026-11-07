@@ -57,7 +57,7 @@ python tools/verify_submission.py --doe results/run1/doe.png --inputs 1.png 2.pn
 
 ## Физика
 
-Формула из презентации организаторов:
+Формула данная нас свыше:
 
 $$K(x,y)=\frac{e^{jkz}}{j\lambda z}\,e^{\frac{j\pi}{\lambda z}(x^2+y^2)}\;\mathrm{FFT}\!\left[H(u,v)\,e^{\frac{j\pi}{\lambda z}(u^2+v^2)}\right]$$
 
