@@ -25,12 +25,6 @@ data/pool_preview.png
 
 # Веса и чекпоинты моделей НЕ публикуем (договорённость команды): любые форматы, в любой папке.
 # Передаём только напрямую внутри команды / экспертам. Не использовать git add -f.
-data/weights/
-*.pt
-*.pth
-*.ckpt
-*.safetensors
-*.onnx
-*.npz
-*.part
-*.tmp
+data/weights/doe_multiplane.pt
+
+Photonika_remote.zip
