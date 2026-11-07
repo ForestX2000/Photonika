@@ -1,4 +1,4 @@
-"""HTTP API Photonika (FastAPI) + раздача фронтенда из frontend/.
+"""HTTP API Photonika (FastAPI) + раздача собранного фронтенда из frontend/dist (cd frontend && npm run build).
 
     python -m backend                         # http://127.0.0.1:8000
     python -m backend --host 0.0.0.0 --port 8000 --device cuda
@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from .service import DEFAULT_WEIGHTS, SynthesisService, UserError, decode_image
 
 ROOT = Path(__file__).resolve().parent.parent
-FRONTEND = ROOT / "frontend"
+FRONTEND = ROOT / "frontend" / "dist"
 
 
 def create_app(weights: Path | None = None, device: str | None = None) -> FastAPI:
@@ -118,7 +118,8 @@ def create_app(weights: Path | None = None, device: str | None = None) -> FastAP
     else:
         @app.get("/")
         def root():
-            return {"message": "Photonika API. Фронтенд не найден (папка frontend/). Документация API: /api/docs"}
+            return {"message": "Photonika API. Фронтенд не собран: cd frontend && npm install && npm run build. "
+                               "Документация API: /api/docs"}
 
     return app
 

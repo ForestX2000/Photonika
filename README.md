@@ -202,12 +202,28 @@ python -m ml.cli bench --sets data/testsets/photos_classic data/testsets/mephi_l
 
 ## Сайт (фронтенд + API)
 
+Фронтенд — **React 19 + Vite + Tailwind CSS 4** (`frontend/`), бэкенд — **FastAPI** (`backend/`).
+Нужен Node.js 20+ (для сборки фронтенда) и Python-окружение из «Быстрого старта».
+
 ```powershell
-python -m backend                       # http://127.0.0.1:8000
+# один раз: собрать фронтенд (результат — frontend/dist, его раздаёт бэкенд)
+cd frontend
+npm install
+npm run build
+cd ..
+
+python -m backend                       # сайт + API: http://127.0.0.1:8000
 python -m backend --host 0.0.0.0 --device cuda --port 8000
 ```
 
-Сервер (`backend/`, FastAPI) раздаёт фронтенд из `frontend/` и HTTP API поверх того же конвейера, что и CLI
+Разработка фронтенда с горячей перезагрузкой — два терминала:
+
+```powershell
+python -m backend                       # терминал 1: API на :8000
+cd frontend; npm run dev                # терминал 2: http://127.0.0.1:5173, /api проксируется на :8000
+```
+
+Сервер (`backend/`, FastAPI) раздаёт собранный фронтенд из `frontend/dist` и HTTP API поверх того же конвейера, что и CLI
 (ДОЭ сохраняется в 8 бит, восстановление считается из него, метрики — по протоколу организаторов):
 
 | запрос | что делает |
@@ -226,8 +242,13 @@ python -m backend --host 0.0.0.0 --device cuda --port 8000
 `PHOTONIKA_CORS` (через запятую — origin'ы, если фронтенд запущен отдельно). Вычисления идут по
 одному (блокировка), результаты хранятся в памяти (последние 32).
 
-Фронтенд (`frontend/`) — без сборки: `index.html`, `styles.css`, `app.js` (ES-модуль), шрифты Oswald и
-Manrope с Google Fonts (без сети — системные). На сайте: загрузка 4 изображений (перетаскиванием или
+Фронтенд (`frontend/src/`): компоненты React в `components/` (первый экран, галерея, студия,
+результаты, «Как это работает»), запросы к API в `lib/api.js`, состояние студии в `lib/useStudio.js`.
+Стили: Tailwind CSS 4 подключён без preflight (сброса стилей браузера), чтобы сайт выглядел ровно
+как раньше; все текущие стили компонентов лежат в `src/styles/components.css` (слой `components`),
+а токены дизайна доступны как утилиты Tailwind: `bg-surface`, `text-laser`, `text-gold`,
+`rounded-card`, `font-display`, `shadow-card` и т. д. (`src/styles/index.css`). Новые блоки удобно
+писать на утилитах. Шрифты Oswald и Manrope — с Google Fonts (без сети — системные). На сайте: загрузка 4 изображений (перетаскиванием или
 по одному) или тестовый набор, выбор метода и его параметров, ДОЭ (цветная фаза и сам `doe.png`),
 4 восстановления с PCC/SSIM (режимы «восстановление / лазер / исходное»), сравнение с GS-50 по
 времени и качеству, 3D-просмотр с ползунком z и анимацией пролёта, таблица метрик, скачивание
@@ -243,6 +264,7 @@ docker compose --profile cpu up --build web-cpu             # сайт без GP
 docker compose --profile streamlit up --build streamlit     # Streamlit-демо, http://localhost:8501
 ```
 
+Фронтенд собирается внутри образа (отдельный этап на Node.js), устанавливать Node для Docker не нужно.
 Веса монтируются из `data/weights` (только чтение) и в образ не попадают; результаты — в `results/`.
 
 ## Результаты итерационных методов (эталон для сети)
@@ -315,13 +337,17 @@ PCC по плоскостям для фото: GS-200 — 0,58 / 0,61 / 0,56 / *
 
 ```
 Photonika/
-├── frontend/                 сайт (без сборки, раздаётся бэкендом)
-│   ├── index.html            разметка страницы
-│   ├── css/styles.css        стили: тёмная тема, скругления, адаптив
-│   ├── js/main.js            логика: загрузка, синтез, результаты, 3D-просмотр
-│   └── assets/               картинки первого экрана, иконка
+├── frontend/                 сайт: React + Vite + Tailwind CSS (npm run dev / npm run build)
+│   ├── index.html            точка входа Vite
+│   ├── vite.config.js        плагины React и Tailwind, прокси /api на бэкенд
+│   ├── public/images/        картинки первого экрана, иконка
+│   └── src/
+│       ├── main.jsx, App.jsx корень приложения, состояние страницы
+│       ├── components/       Nav, Hero, Marquee, Gallery, studio/*, results/*, How, Numbers, Footer
+│       ├── lib/              api.js, useStudio.js, hooks.js, format.js, constants.js
+│       └── styles/           index.css (Tailwind + токены), components.css (стили компонентов)
 ├── backend/                  веб-сервер (FastAPI)
-│   ├── main.py               HTTP API + раздача frontend/
+│   ├── main.py               HTTP API + раздача frontend/dist
 │   ├── service.py            синтез, кэш результатов, рендер PNG
 │   └── __main__.py           запуск: python -m backend
 ├── ml/                       физика, нейросеть, обучение, CLI

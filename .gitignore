@@ -11,13 +11,17 @@ env/
 .vscode/
 .idea/
 
+# Фронтенд: зависимости и сборка (npm install / npm run build)
+frontend/node_modules/
+frontend/dist/
+
 # Генерируемые данные и состояние обучения (воспроизводятся командами из README)
 data/pool/
 data/photos/
 data/training/
 data/runs/
 data/pool_preview.png
-results/
+/results/
 
 # Веса и чекпоинты моделей НЕ публикуем (договорённость команды): любые форматы, в любой папке.
 # Передаём только напрямую внутри команды / экспертам. Не использовать git add -f.

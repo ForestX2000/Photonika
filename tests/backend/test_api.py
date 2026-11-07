@@ -115,8 +115,9 @@ def test_frontend_is_served(client):
 
 
 def test_swagger_only_at_separate_url(client):
-    page = client.get("/").text
-    assert "/docs" not in page and "openapi" not in page        # с сайта на документацию ссылок нет
+    if (ROOT / "frontend" / "dist" / "index.html").is_file():  # без сборки вместо сайта — JSON-подсказка
+        page = client.get("/").text
+        assert "/docs" not in page and "openapi" not in page    # с сайта на документацию ссылок нет
     assert client.get("/api/docs").status_code == 200
     assert client.get("/api/openapi.json").json()["info"]["title"] == "Photonika API"
     assert client.get("/docs").status_code == 404
