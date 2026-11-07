@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -29,6 +30,29 @@ if str(ROOT) not in sys.path:
 from ml.config import DEFAULT_OPTICS, PHYSICS_VERSION
 from ml.data import SPLIT_SEEDS, classic_testsets, fixed_quads
 from ml.metrics import DEFAULT_NORM
+
+NEURAL_METHODS = ("net", "net+gs", "net+adam", "net+gs+adam")
+
+
+def validate_neural_profiles(profiles: list[dict]) -> None:
+    names = set()
+    for profile in profiles:
+        if profile.get("method") not in NEURAL_METHODS:
+            raise ValueError("deployment profiles must start with neural synthesis")
+        label = profile.get("label")
+        if not isinstance(label, str) or not label or label in names:
+            raise ValueError("neural profile labels must be nonempty and unique")
+        names.add(label)
+        params = profile.get("params", {})
+        if set(params) - {"refine_steps", "adam_steps", "refine_lr"}:
+            raise ValueError("unsupported neural refinement parameter")
+        for key in ("refine_steps", "adam_steps"):
+            value = params.get(key, 0)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("neural refinement steps must be nonnegative integers")
+        rate = params.get("refine_lr", 0.03)
+        if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
+            raise ValueError("neural refinement learning rate must be positive and finite")
 
 
 def file_sha256(path: Path) -> str:
@@ -64,7 +88,7 @@ def summarize(records: list[dict]) -> dict:
 def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
               count: int = 4, seeds: tuple[int, ...] = (0,), gs_iters: int = 50,
               refine_steps: int = 10, classic: bool = True, adam_steps: int = 0,
-              photo_split: str = "legacy") -> dict:
+              photo_split: str = "legacy", neural_profiles: list[dict] | None = None) -> dict:
     """Benchmark identical quads for every method; exclude one warmup per method."""
     import torch
 
@@ -74,6 +98,8 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
 
     if not weights:
         raise ValueError("at least one checkpoint is required")
+    if neural_profiles is not None:
+        validate_neural_profiles(neural_profiles)
     if photo_split not in ("legacy", "source"):
         raise ValueError("photo_split must be legacy or source")
     if split not in SPLIT_SEEDS or count < 1 or gs_iters < 1 or refine_steps < 0 or adam_steps < 0:
@@ -186,7 +212,12 @@ def benchmark(weights: list[Path], *, device: str = "auto", split: str = "test",
             "model": ckpt["model"], "step": ckpt.get("step"),
         }
         measure(str(path), "net", model=net, checkpoint=metadata)
-        if refine_steps:
+        if neural_profiles is not None:
+            for profile in neural_profiles:
+                if profile["method"] != "net":
+                    measure(f"{path}:{profile['label']}", profile["method"], model=net,
+                            checkpoint=metadata, **profile.get("params", {}))
+        elif refine_steps:
             measure(f"{path}+gs-{refine_steps}", "net+gs", model=net,
                     checkpoint=metadata, refine_steps=refine_steps)
         del net

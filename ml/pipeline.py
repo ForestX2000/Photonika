@@ -22,11 +22,12 @@ from .data import load_png, save_png
 from .fresnel import fresnel_modulus_np, phase_to_uint8, uint8_to_phase
 from .metrics import DEFAULT_NORM, modulus_to_uint8, pair_metrics, summarize
 
-METHODS = ("net", "net+gs", "net+adam", "gs", "gs+adam", "adam")
+METHODS = ("net", "net+gs", "net+adam", "net+gs+adam", "gs", "gs+adam", "adam")
 METHOD_HELP = {
     "net": "один проход нейросети",
     "net+gs": "нейросеть + K итераций GS (быстрое доуточнение)",
     "net+adam": "нейросеть + K шагов Adam (доуточнение)",
+    "net+gs+adam": "синтез нейросетью → GS → Adam; выбор лучшего 8-битного ДОЭ",
     "gs": "многоплоскостный Gerchberg–Saxton",
     "gs+adam": "GS, затем Adam по фазе (лучший итерационный эталон)",
     "adam": "Adam по фазе со случайного старта",
@@ -101,7 +102,7 @@ def synthesize_phase(sources_u8: np.ndarray, method: str = "gs+adam", *, model=N
     params: dict = {"seed": seed}
     _sync(device)
     t0 = time.perf_counter()
-    if method in ("net", "net+gs", "net+adam"):
+    if method.startswith("net"):
         with torch.inference_mode():
             phase = model(target)
         if method == "net+gs":
@@ -110,6 +111,12 @@ def synthesize_phase(sources_u8: np.ndarray, method: str = "gs+adam", *, model=N
         elif method == "net+adam":
             phase = adam_phase(target, prop, refine_steps, init_phase=phase.clone(), lr=refine_lr)
             params.update(refine_steps=refine_steps, refine_lr=refine_lr)
+        elif method == "net+gs+adam":
+            from .hybrid import refine_network_phase
+            phase, diagnostics = refine_network_phase(phase.clone(), target, prop,
+                                                      gs_steps=refine_steps, adam_steps=adam_steps, lr=refine_lr)
+            params.update(refine_steps=refine_steps, adam_steps=adam_steps, refine_lr=refine_lr,
+                          neural_primary=True, refinement=diagnostics)
     elif method == "gs":
         phase = gs_multiplane(target, prop, gs_iters, seed=seed)
         params.update(gs_iters=gs_iters)

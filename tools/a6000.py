@@ -29,6 +29,13 @@ CANDIDATES = (
     {"name": "capacity_b64_u8", "base": 64, "unroll": 8, "stage_base": 32},
 )
 
+NEURAL_REFINEMENTS = [
+    {"label": "fast-gs25", "method": "net+gs", "params": {"refine_steps": 25}},
+    {"label": "adam50", "method": "net+adam", "params": {"refine_steps": 50}},
+    {"label": "gs25-adam50", "method": "net+gs+adam", "params": {"refine_steps": 25, "adam_steps": 50}},
+    {"label": "gs25-adam150", "method": "net+gs+adam", "params": {"refine_steps": 25, "adam_steps": 150}},
+]
+
 
 def stamp() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -59,15 +66,18 @@ def source_hash() -> str:
     return digest.hexdigest()
 
 
-def make_plan(minutes: float, *, precision: str = "bf16", pool_size: int = 50000,
+def make_plan(minutes: float, *, precision: str = "bf16", pool_size: int = 100000,
               grad_accum: int = 1, max_steps: int | None = None,
-              pilot_count: int = 4, test_count: int = 16) -> dict:
+              pilot_count: int = 4, test_count: int = 16, threads: int = 12,
+              vram_limit_gib: float = 40.0, pool_in_ram: bool = True) -> dict:
     if minutes < 3 or pool_size < 100 or grad_accum < 1 or pilot_count < 1 or test_count < 1:
         raise ValueError("minutes >= 3, pool_size >= 100, and positive accumulation/evaluation counts required")
     if max_steps is not None and max_steps < 1:
         raise ValueError("max_steps must be positive")
     if precision not in ("fp32", "bf16", "auto"):
         raise ValueError("precision must be fp32, bf16 or auto")
+    if threads < 1 or not 0 < vram_limit_gib <= 45:
+        raise ValueError("positive threads and VRAM limit <= 45 GiB required")
     pilot_minutes = min(15.0, minutes * 0.1)
     reserve = min(15.0, max(0.5, minutes * 0.1))
     common = dict(architecture="physics-unrolled", model_version=2, spectral_modes=8,
@@ -78,6 +88,7 @@ def make_plan(minutes: float, *, precision: str = "bf16", pool_size: int = 50000
                   ema_decay=0.999, teacher_weight=0.1, teacher_every=16,
                   teacher_gs_iters=8, teacher_adam_steps=8, seed=42)
     common["preview"] = False  # Classic test examples are reserved for final evaluation.
+    common.update(threads=threads, vram_limit_gib=vram_limit_gib, pool_in_ram=pool_in_ram)
     if max_steps is not None:
         common["max_steps"] = max_steps
     return {
@@ -89,14 +100,18 @@ def make_plan(minutes: float, *, precision: str = "bf16", pool_size: int = 50000
         "evaluation_reserve_minutes": reserve,
         "nominal_main_training_minutes": max(0.5, minutes - len(CANDIDATES) * pilot_minutes - reserve),
         "candidates": [dict(c) for c in CANDIDATES],
+        "hardware_profile": {"reported_vram_gb": 45, "cpu_cores": 12, "ram_gb": 282, "ssd_gb": 30},
         "common_training": common,
         "pilot_validation": {"split": "val", "count": pilot_count, "classic": False,
                              "gs_iters": 50, "adam_steps": 0, "refine_steps": 0,
                              "seeds": [0], "photo_split": "source"},
+        "selection_validation": {"split": "val", "count": pilot_count, "classic": False,
+                                 "gs_iters": 50, "adam_steps": 0, "refine_steps": 0,
+                                 "seeds": [0], "photo_split": "source", "neural_profiles": NEURAL_REFINEMENTS},
         "final_test": {"split": "test", "count": test_count, "classic": True,
-                       "gs_iters": 100, "adam_steps": 200, "refine_steps": 25,
+                       "gs_iters": 100, "adam_steps": 200, "refine_steps": 0,
                        "seeds": [0, 1, 2], "photo_split": "source"},
-        "selection": "highest mean PCC + SSIM after uint8 DOE reconstruction on validation only",
+        "selection": "joint checkpoint + neural-first refinement selection by quantized validation PCC+SSIM; latency breaks ties",
         "test_policy": "test set is evaluated after all architecture/checkpoint selections are frozen",
     }
 
@@ -129,7 +144,9 @@ def run_training(config: dict, log: Path, stop: Path, deadline: float) -> None:
     started = time.monotonic()
     next_progress = started + 30
     with log.open("a", encoding="utf-8") as stream:
-        process = subprocess.Popen(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT)
+        environment = dict(os.environ, OMP_NUM_THREADS=str(config.get("threads", 12)),
+                           MKL_NUM_THREADS=str(config.get("threads", 12)))
+        process = subprocess.Popen(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=environment)
         try:
             while process.poll() is None:
                 if stop.exists():
@@ -175,6 +192,12 @@ def dataset_info() -> dict:
             "counts": {split: sum(s["split"] == split for s in sources) for split in ("train", "val", "test")}}
 
 
+def prepare_pool(pool_size: int) -> None:
+    from ml.data import load_or_build_pool
+    images, categories = load_or_build_pool(pool_size, seed=0, photo_split="train", mmap=True)
+    del images, categories
+
+
 def check_dataset(info: dict, allow_small: bool) -> None:
     counts = info["counts"]
     if any(counts.get(split, 0) < 1 for split in ("train", "val", "test")):
@@ -196,7 +219,37 @@ def checkpoint_scores(report: dict) -> dict[str, float]:
     return scores
 
 
-def quality_comparison(report: dict) -> dict:
+def select_neural_variant(report: dict) -> dict:
+    from tools.benchmark_models import NEURAL_METHODS
+
+    variants = [entry for entry in report["variants"]
+                if entry["method"] in NEURAL_METHODS and entry.get("checkpoint")]
+    if not variants:
+        raise ValueError("no neural-first candidates available for deployment")
+
+    def key(entry):
+        summary = entry["summary"]
+        score = float(summary["pcc"] + summary["ssim"])
+        if not float("-inf") < score < float("inf"):
+            raise ValueError("non-finite validation score")
+        latency = summary.get("synthesis_time_ms_median")
+        return score, -float(latency if latency is not None else float("inf"))
+
+    return max(variants, key=key)
+
+
+def check_storage(directory: Path, pool_size: int) -> dict:
+    # Largest model: raw + EMA + two Adam moments, best weights, atomic-save
+    # temporaries, four phases, plus DIV2K and a reserve for final artifacts.
+    required = pool_size * 128 * 128 + 7 * 2**30
+    free = shutil.disk_usage(directory).free
+    if free < required:
+        raise RuntimeError(f"Not enough free SSD space: {free / 2**30:.1f} GiB; need {required / 2**30:.1f} GiB. "
+                           "Free space or reduce --pool-size; existing runs will not be deleted.")
+    return {"free_bytes": free, "required_bytes": required, "pool_bytes": pool_size * 128 * 128}
+
+
+def quality_comparison(report: dict, selected_method: str = "net") -> dict:
     """Report held-out measurements without using test results to choose weights."""
     methods = {}
     for variant in report.get("variants", []):
@@ -207,11 +260,11 @@ def quality_comparison(report: dict) -> dict:
                                           "synthesis_time_ms_median": summary.get("synthesis_time_ms_median"),
                                           "params": variant.get("params", {})}
     baseline_names = [name for name in ("gs", "gs+adam") if name in methods]
-    if "net" not in methods or not baseline_names:
+    if selected_method not in methods or not baseline_names:
         return {"status": "not_available", "methods": methods, "budgets_matched": False,
                 "note": "Network and baseline measurements are required; test data never changes the exported weights."}
     comparisons = {}
-    for name in ("net", "net+gs"):
+    for name in ("net", "net+gs", "net+adam", "net+gs+adam"):
         if name not in methods:
             continue
         comparisons[name] = {}
@@ -223,8 +276,9 @@ def quality_comparison(report: dict) -> dict:
                 "both_metrics_at_least_baseline": (candidate["pcc"] >= baseline["pcc"] and
                                                     candidate["ssim"] >= baseline["ssim"]),
             }
-    competitive = all(row["both_metrics_at_least_baseline"] for row in comparisons["net"].values())
+    competitive = all(row["both_metrics_at_least_baseline"] for row in comparisons[selected_method].values())
     return {"status": "competitive_on_this_test" if competitive else "experimental",
+            "selected_method": selected_method,
             "methods": methods, "comparisons": comparisons, "budgets_matched": False,
             "note": ("These are different inference budgets; compare quality and latency together. "
                      "This test report does not establish state-of-the-art performance and never changes the selected weights.")}
@@ -234,10 +288,10 @@ def print_quality(comparison: dict) -> None:
     for name, values in comparison["methods"].items():
         print(f"[quality] {name}: PCC={values['pcc']:.4f} SSIM={values['ssim']:.4f}", flush=True)
     if comparison["status"] == "experimental":
-        print("[quality] The network remains experimental: at least one baseline metric is higher. "
+        print("[quality] The selected neural/hybrid pipeline remains experimental: a baseline metric is higher. "
               "Inference budgets differ; compare quality and latency together.", flush=True)
     elif comparison["status"] == "competitive_on_this_test":
-        print("[quality] Network metrics match or exceed the measured baselines on this test. "
+        print("[quality] Selected neural/hybrid metrics match or exceed the measured baselines on this test. "
               "Inference budgets differ; this does not establish overall leadership.", flush=True)
     else:
         print("[quality] Baseline comparison is unavailable in this report.", flush=True)
@@ -253,13 +307,15 @@ def checked_artifact(record: dict) -> Path:
 def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         output: Path = ROOT / "data/runs/a6000", weights: Path = ROOT / "data/weights/doe_a6000.pt",
         resume: bool = False, skip_fetch: bool = False, dry_run: bool = False,
-        pool_size: int = 50000, grad_accum: int = 1, max_steps: int | None = None,
-        pilot_count: int = 4, test_count: int = 16, threads: int = 8,
+        pool_size: int = 100000, grad_accum: int = 1, max_steps: int | None = None,
+        pilot_count: int = 4, test_count: int = 16, threads: int = 12,
+        vram_limit_gib: float = 40.0, pool_in_ram: bool = True,
         allow_small_dataset: bool = False) -> dict:
     if threads < 1:
         raise ValueError("threads must be positive")
     plan = make_plan(minutes, precision=precision, pool_size=pool_size, grad_accum=grad_accum,
-                     max_steps=max_steps, pilot_count=pilot_count, test_count=test_count)
+                     max_steps=max_steps, pilot_count=pilot_count, test_count=test_count, threads=threads,
+                     vram_limit_gib=vram_limit_gib, pool_in_ram=pool_in_ram)
     output, weights = Path(output).resolve(), Path(weights).resolve()
     if dry_run:
         return {**plan, "output": str(output), "export_weights": str(weights), "device": device,
@@ -272,6 +328,7 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
     identity = {"source_sha256": source_hash(), "weights": str(weights), "device": device,
                 "common_training": plan["common_training"], "candidates": plan["candidates"],
                 "pilot_validation": plan["pilot_validation"], "final_test": plan["final_test"],
+                "selection_validation": plan["selection_validation"],
                 "allow_small_dataset": allow_small_dataset}
     if resume:
         if not manifest_path.is_file():
@@ -287,6 +344,8 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         if manifest.get("status") == "completed":
             if not Path(manifest["test_report"]).is_file():
                 raise RuntimeError("Completed test report is missing; restore the run artifacts")
+            if not (output / "inference.json").is_file():
+                raise RuntimeError("Validated inference preset is missing; restore inference.json")
             print(f"[done] Existing completed run: {manifest_path}", flush=True)
             return manifest
     else:
@@ -298,12 +357,13 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
                     "status": "preparing", "pilots": {}, "data_ready": False,
                     "invocations": [], "plan": plan}
     output.mkdir(parents=True, exist_ok=True)
+    storage = check_storage(output, pool_size)
     hardware = preflight(device, precision)
     device = hardware["device"]
     import torch
 
     torch.set_num_threads(threads)
-    manifest["invocations"].append({"started_at": stamp(), "minutes": minutes, "hardware": hardware})
+    manifest["invocations"].append({"started_at": stamp(), "minutes": minutes, "hardware": hardware, "storage": storage})
 
     def save(**updates):
         manifest.update(updates, updated_at=stamp(), invocation_elapsed_seconds=round(time.monotonic() - started, 2))
@@ -341,6 +401,12 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
             atomic_json(output / "photo_sources.json", data)
             manifest["data"] = {k: data[k] for k in ("version", "sha256", "counts")}
             manifest["data_ready"] = True
+            save()
+        if not manifest.get("pool_ready"):
+            require_time()
+            save(status="preparing-pool")
+            prepare_pool(pool_size)
+            manifest["pool_ready"] = True
             save()
         # Each validated pilot is cached. A failed/OOM candidate does not prevent
         # an otherwise usable smaller candidate from completing the experiment.
@@ -408,10 +474,14 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
         if not manifest.get("export"):
             require_time()
             paths = [checked_artifact(r) for r in valid] + [checked_artifact(final)]
-            report = run_benchmark(paths, device=device, parameters=plan["pilot_validation"])
+            report = run_benchmark(paths, device=device, parameters=plan["selection_validation"])
             atomic_json(output / "selection_validation.json", report)
-            scores = checkpoint_scores(report)
-            selected = max(paths, key=lambda p: scores[str(p.resolve())])
+            variant = select_neural_variant(report)
+            selected = Path(variant["checkpoint"]["path"]).resolve()
+            if selected not in [path.resolve() for path in paths]:
+                raise ValueError("selected checkpoint is outside the validated candidate set")
+            profile = {"label": variant.get("label", variant["method"]), "method": variant["method"],
+                       "params": variant.get("params", {})}
             if weights.exists():
                 raise FileExistsError(f"Export path was created by another process: {weights}")
             weights.parent.mkdir(parents=True, exist_ok=True)
@@ -419,14 +489,24 @@ def run(*, minutes: float = 180, device: str = "cuda", precision: str = "bf16",
             shutil.copyfile(selected, temporary)
             os.replace(temporary, weights)
             manifest["export"] = {"weights": str(weights), "sha256": file_hash(weights),
-                                  "selected_from": str(selected), "validation_score": scores[str(selected.resolve())]}
+                                  "selected_from": str(selected), "validation_score": variant["summary"]["pcc"] + variant["summary"]["ssim"],
+                                  "neural_profile": profile}
+            try:
+                portable_weights = Path(os.path.relpath(weights, output)).as_posix()
+            except ValueError:
+                portable_weights = str(weights)
+            atomic_json(output / "inference.json", dict(schema_version=1, weights=portable_weights,
+                        weights_sha256=manifest["export"]["sha256"], neural_primary=True,
+                        selected_on="validation", profile=profile))
             save(status="selected")
         require_time()
         save(status="test-evaluation")
-        report = run_benchmark([weights], device=device, parameters=plan["final_test"])
+        selected_profile = manifest["export"]["neural_profile"]
+        final_parameters = dict(plan["final_test"], neural_profiles=[selected_profile])
+        report = run_benchmark([weights], device=device, parameters=final_parameters)
         report_path = output / "test_benchmark.json"
         atomic_json(report_path, report)
-        comparison = quality_comparison(report)
+        comparison = quality_comparison(report, selected_profile["method"])
         save(status="completed", test_report=str(report_path), quality_comparison=comparison, completed_at=stamp())
         print_quality(comparison)
         print(f"[done] Weights: {weights}\n[done] Held-out report: {report_path}", flush=True)
@@ -449,12 +529,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--allow-small-dataset", action="store_true",
                         help="explicit smoke-only override for source-count minimums")
     parser.add_argument("--dry-run", action="store_true", help="print plan without torch/CUDA, files or downloads")
-    parser.add_argument("--pool-size", type=int, default=50000)
+    parser.add_argument("--pool-size", type=int, default=100000)
     parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=None, help="cap steps per phase for a smoke check")
     parser.add_argument("--pilot-count", type=int, default=4)
     parser.add_argument("--test-count", type=int, default=16)
-    parser.add_argument("--threads", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--threads", type=int, default=min(12, os.cpu_count() or 1))
+    parser.add_argument("--vram-limit-gib", type=float, default=40.0)
+    parser.add_argument("--pool-in-ram", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--train-config", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.train_config:
