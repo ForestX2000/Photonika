@@ -32,6 +32,7 @@ OPTICS = DEFAULT_OPTICS
 N = OPTICS.size
 
 METHOD_TITLES = {
+    "net+gs+adam": "Нейросеть + GS + Adam",
     "net+gs": "Нейросеть + GS",
     "net": "Нейросеть",
     "net+adam": "Нейросеть + Adam",
@@ -148,6 +149,8 @@ class SynthesisService:
 
         try:
             model, ckpt = load_model(self.weights, self.device)
+            if model.prop.optics != OPTICS:
+                raise ValueError("checkpoint optics do not match server optics")
         except Exception as exc:  # несовместимые веса не должны ронять сервер
             self.model, self.model_info = None, {"error": str(exc)}
             return
@@ -161,7 +164,7 @@ class SynthesisService:
         return self.model is not None
 
     def methods(self) -> list[dict]:
-        order = ["net+gs", "net", "net+adam", "gs+adam", "gs", "adam"]
+        order = ["net+gs", "net+gs+adam", "net", "net+adam", "gs+adam", "gs", "adam"]
         return [{"id": m, "title": METHOD_TITLES[m], "description": METHOD_HELP[m],
                  "available": self.has_net or not m.startswith("net")} for m in order if m in METHODS]
 
