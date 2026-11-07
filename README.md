@@ -13,5 +13,6 @@ docker compose up -d -build
 ```
 
 Веб-интерфейс будет доступен на <http://localhost:8000>
+Или [уже развёрнутое решение](https://photonika.forestinc.ru)
 
 Веса для папки data/weights и презентацию можно найти на [гугл диске](https://drive.google.com/drive/folders/1--rE2HqjoPtzeWC8t4qfpRXWkelBIaSt?usp=sharing)
